@@ -163,6 +163,13 @@ def cmd_doctor() -> int:
     print("Prowl doctor\n" + "=" * 40)
     ok = True
 
+    pyver = sys.version.split()[0]
+    if sys.version_info >= (3, 11):
+        print(f"✅ Python {pyver}")
+    else:
+        ok = False
+        print(f"❌ Python {pyver} — Prowl needs 3.11+. Use the `prowl` launcher or python3.14.")
+
     offline = bool(cfg.get("offline"))
     print(f"•  Mode: {'OFFLINE (local model only)' if offline else 'online (escalation enabled)'}")
 
@@ -232,6 +239,17 @@ def main(argv: list[str] | None = None) -> int:
     if not argv or argv[0] in ("help", "--help", "-h"):
         print(HELP)
         return 0
+
+    # Prowl targets Python 3.11+. The system `python3` on macOS is often 3.9, so
+    # warn (don't hard-fail — read-only commands like doctor/config still work)
+    # and point at the launcher, which pins a newer interpreter.
+    if sys.version_info < (3, 11):
+        print(
+            f"warning: Prowl targets Python 3.11+, but this is {sys.version.split()[0]}. "
+            "Some features may fail — use the `prowl` launcher (scripts/install.sh) "
+            "or run with python3.14/python3.13.",
+            file=sys.stderr,
+        )
 
     cmd = argv[0]
     if cmd == "listen":

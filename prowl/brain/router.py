@@ -21,23 +21,41 @@ from ..core.config import Config
 from . import prematch
 from .local import LocalBrain, LocalModelError
 
-_SYSTEM = """You are the router for Prowl, a Mac voice assistant. Classify the user's request.
+_SYSTEM = """You are the router for Prowl, a Mac voice assistant. Decide how to handle the \
+user's message and output ONLY one JSON object.
 
-Choose ONE action:
-- "skill": the request maps cleanly onto one built-in skill below. Fill "skill" and "args".
-- "escalate": the request is open-ended, multi-step, or needs judgement/agentic work \
-(writing/editing files, organizing many files, research, coding, anything not covered by a skill).
-- "chat": small talk, a quick factual question, or a greeting. Put the answer in "reply".
+Actions:
+- "skill": it maps onto exactly ONE built-in skill below. Set "skill" (exact name) and "args".
+- "chat": a factual question you can answer, small talk, or a greeting. Put the answer in "reply".
+- "escalate": an open-ended or MULTI-STEP task that needs an autonomous agent — organizing / \
+renaming / sorting many files, writing or running code, research, editing documents, or anything \
+not covered by a single skill.
 
 Built-in skills:
 {catalog}
 
-Rules:
-- Only use a skill name from the list. Only include args that skill accepts.
-- Prefer "skill" when one clearly fits; prefer "escalate" for anything bigger or vaguer.
-- When unsure between skill and escalate, choose "escalate". Never invent a skill.
-- Respond with ONLY a JSON object, no prose:
-  {{"action":"skill|escalate|chat","skill":<name or null>,"args":{{}},"reply":<string or null>}}
+Guidelines:
+- Use a skill ONLY when one clearly matches; use its exact name and only args it accepts.
+- If the task needs several steps, judgement, or code, choose "escalate" — even if a skill name \
+looks vaguely related. Do NOT force it into find_files/open_url just because it mentions files or a topic.
+- Answer simple factual questions yourself with "chat" + "reply". Do NOT open a web page for a fact you know.
+- Never invent a skill name.
+
+Output ONLY: {"action":"skill|chat|escalate","skill":<name or null>,"args":{},"reply":<string or null>}
+
+Examples:
+User: what's the capital of France
+{"action":"chat","skill":null,"args":{},"reply":"Paris."}
+User: set volume to 20
+{"action":"skill","skill":"set_volume","args":{"level":20}}
+User: organize my downloads into folders by type and rename them
+{"action":"escalate","skill":null,"args":{},"reply":null}
+User: write a python script to resize my images and run it
+{"action":"escalate","skill":null,"args":{},"reply":null}
+User: summarize this PDF and email it to my boss
+{"action":"escalate","skill":null,"args":{},"reply":null}
+User: tell me a joke
+{"action":"chat","skill":null,"args":{},"reply":"Why did the developer go broke? He used up all his cache."}
 """
 
 
@@ -66,7 +84,8 @@ class Router:
 
         # 2) Otherwise, ask the local model to classify.
         catalog = skills_pkg.specs_text()
-        system = _SYSTEM.format(catalog=catalog)
+        # Use replace, not str.format: the prompt's JSON examples contain braces.
+        system = _SYSTEM.replace("{catalog}", catalog)
         try:
             raw = self.local.chat(system, utterance, json_mode=True, temperature=0.0)
         except LocalModelError:

@@ -18,8 +18,12 @@ a destructive action beyond what the skill's own safety layer already guards.
 from __future__ import annotations
 
 import re
+from typing import Optional
 
-Match = tuple[str, dict] | None
+# NB: use typing.Optional (not `X | None`) here because this is a *runtime*
+# expression, not an annotation — keeping it importable even under an old
+# interpreter, so `prowl doctor` can still tell the user to use Python 3.11+.
+Match = Optional["tuple[str, dict]"]
 
 _FILE_NOUN = (
     r"file|files|document|documents|doc|pdf|pdfs|photo|photos|image|images|"

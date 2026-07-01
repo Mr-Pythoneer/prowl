@@ -63,30 +63,33 @@ See **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** for the full picture and **
 ## Quick start
 
 ```bash
-# 0. prerequisites: Ollama running, the fast model pulled, OpenClaw configured
+# 0. prerequisites
 ollama serve &                 # if not already running
-ollama pull llama3.2:3b        # ~2 GB, the fast brain
+ollama pull llama3.2:3b        # ~2 GB, the fast local brain
 
 git clone https://github.com/Mr-Pythoneer/prowl.git
 cd prowl
 
-# 1. sanity-check the environment
-python3 -m prowl doctor
+# 1. one-shot install: finds a Python 3.11+, installs the GUI extras, builds the
+#    on-device voice helper, and drops a `prowl` launcher on your PATH (pinned to
+#    that interpreter, so it survives PATH changes / reboots).
+bash scripts/install.sh
 
-# 2. try it from the terminal (no GUI needed)
-python3 -m prowl "what's the weather like offline"     # → local chat
-python3 -m prowl "open Safari"                          # → skill
-python3 -m prowl clean                                  # → dry-run disk report
-python3 -m prowl "organize my Downloads by file type"   # → escalates to OpenClaw
+# 2. sanity-check + try it
+prowl doctor
+prowl "what's the capital of France"      # → instant local answer
+prowl "open Safari"                        # → skill (deterministic, no model call)
+prowl clean                                # → dry-run disk report
+prowl offline on                           # → 100% local, no online calls
 
-# 3. install the GUI extras + run the always-on menu-bar app
-pip install -r requirements.txt      # rumps + pynput (small; pyobjc already present)
-python3 -m prowl serve
-
-# 4. build the on-device voice helper (native Swift, no download) and talk to it
-bash scripts/build_stt.sh
-python3 -m prowl listen
+# 3. run the always-on menu-bar app (⌘⇧Space to talk) + voice
+prowl serve
+prowl listen
 ```
+
+> **Python 3.11+ required.** macOS's built-in `python3` is often 3.9 — the
+> installer handles this by pinning a newer interpreter into the `prowl`
+> launcher. To run without installing: `PYTHONPATH=$PWD python3.14 -m prowl …`
 
 Default hotkey: **⌘⇧Space** → talk. Everything is configurable in `~/.prowl/config.json` (`prowl config get` / `prowl config set`).
 
