@@ -52,7 +52,7 @@ Think of it as **Siri + OpenClaw**: the snappy front-end of a voice assistant, b
                                 └──────────────┘        └───────────────┘
 ```
 
-- **Router** (`prowl/brain/router.py`) — the local model classifies each request in JSON mode; it *only decides*, it never runs anything, and it fails safe toward "chat", never toward a destructive skill.
+- **Router** (`prowl/brain/router.py`) — two stages: a **deterministic pre-router** (`brain/prematch.py`) catches common commands ("pause the music", "clean up my mac", "set volume to 30") instantly with regex — no model call, model-independent — and only the long tail falls through to the local model, which classifies in JSON mode. The router *only decides*, never runs anything, and fails safe toward "chat", never toward a destructive skill.
 - **Executor** (`prowl/executor.py`) — runs the chosen skill behind a safety gate (confirmation, dry-run, logging, crash isolation).
 - **Escalator** (`prowl/brain/escalate.py`) — shells out to `openclaw agent` (default) or `claude -p`. No API keys live in Prowl.
 

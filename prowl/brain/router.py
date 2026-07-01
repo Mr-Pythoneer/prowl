@@ -18,6 +18,7 @@ from typing import Any
 
 from .. import skills as skills_pkg
 from ..core.config import Config
+from . import prematch
 from .local import LocalBrain, LocalModelError
 
 _SYSTEM = """You are the router for Prowl, a Mac voice assistant. Classify the user's request.
@@ -55,6 +56,15 @@ class Router:
         self.local = local or LocalBrain(config)
 
     def decide(self, utterance: str) -> Decision:
+        # 1) Fast, model-independent path: high-confidence phrase -> skill.
+        pm = prematch.match(utterance)
+        if pm:
+            skill, args = pm
+            reg = skills_pkg.REGISTRY.get(skill)
+            if reg is not None and reg.spec.enabled:
+                return Decision(action="skill", skill=skill, args=args, raw="prematch")
+
+        # 2) Otherwise, ask the local model to classify.
         catalog = skills_pkg.specs_text()
         system = _SYSTEM.format(catalog=catalog)
         try:
