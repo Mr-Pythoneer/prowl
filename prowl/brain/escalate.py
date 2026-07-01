@@ -29,7 +29,8 @@ class Escalator:
 
     @property
     def enabled(self) -> bool:
-        return self.backend not in ("off", "", None)
+        # Off if the backend is disabled OR offline mode is on.
+        return self.cfg.escalation_enabled()
 
     def run(self, task: str) -> str:
         if not self.enabled:

@@ -100,8 +100,8 @@ class Orchestrator:
 
     def _escalate(self, utterance: str, ctx: Context) -> SkillResult:
         if not self.escalator.enabled:
-            # No smart backend: best-effort local answer.
-            return self._chat(utterance, Decision(action="chat"), ctx)
+            # Escalation is off (offline mode, or no backend configured).
+            return self._offline_fallback(utterance, ctx)
         ctx.speak("On it — this one needs the smart agent, give me a moment.")
         try:
             answer = self.escalator.run(utterance)
@@ -113,3 +113,27 @@ class Orchestrator:
         spoken = answer if len(answer) <= 400 else answer[:380].rsplit(" ", 1)[0] + "…"
         ctx.speak(spoken)
         return SkillResult.say(spoken, detail=answer)
+
+    def _offline_fallback(self, utterance: str, ctx: Context) -> SkillResult:
+        """Handle an 'escalate' decision without any online call.
+
+        In offline mode we tell the local model to answer if it can, or to say
+        honestly (in one line) that the task needs online mode — rather than
+        pretending to run an agent it can't reach.
+        """
+        if self.cfg.get("offline"):
+            system = (
+                "You are Prowl running in OFFLINE mode: a local model only, with no "
+                "online agent and no ability to run multi-step tool tasks. "
+                "If the user's request is a question, answer in one or two short spoken "
+                "sentences. If it needs actions/tools you don't have offline, say briefly "
+                "that it needs online mode (they can run `prowl offline off`). No markdown."
+            )
+            try:
+                answer = self.local.chat(system, utterance, temperature=0.4)
+            except LocalModelError:
+                answer = "My local brain is offline — start Ollama and try again."
+            ctx.speak(answer)
+            return SkillResult.say(answer)
+        # No escalation backend configured (but not offline): best-effort local answer.
+        return self._chat(utterance, Decision(action="chat"), ctx)

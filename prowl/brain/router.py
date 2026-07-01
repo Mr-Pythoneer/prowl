@@ -61,7 +61,7 @@ class Router:
             raw = self.local.chat(system, utterance, json_mode=True, temperature=0.0)
         except LocalModelError:
             # Local model down: fall back to escalation if available, else chat.
-            backend_on = self.cfg.escalation_backend not in ("off", "", None)
+            backend_on = self.cfg.escalation_enabled()
             return Decision(
                 action="escalate" if backend_on else "chat",
                 reply=None if backend_on else "My local brain is offline right now.",
@@ -99,9 +99,9 @@ class Router:
         if d.action == "skill":
             skill = skills_pkg.REGISTRY.get(d.skill or "")
             if skill is None or not skill.spec.enabled:
-                # Hallucinated / disabled skill -> escalate instead of guessing.
-                backend_on = self.cfg.escalation_backend not in ("off", "", None)
-                d.action = "escalate" if backend_on else "chat"
+                # Hallucinated / disabled skill -> escalate instead of guessing
+                # (or answer locally when escalation is off / offline mode).
+                d.action = "escalate" if self.cfg.escalation_enabled() else "chat"
                 d.skill = None
         if not isinstance(d.args, dict):
             d.args = {}

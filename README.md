@@ -100,8 +100,32 @@ Default hotkey: **⌘⇧Space** → talk. Everything is configurable in `~/.prow
 | `prowl listen` | Capture one voice turn, then act |
 | `prowl serve` | Run the always-on menu-bar app |
 | `prowl clean [--apply]` | Reclaim disk space (dry-run unless `--apply`) |
+| `prowl offline [on\|off]` | Local-model-only mode — no online agent calls |
 | `prowl doctor` | Check Ollama, model, OpenClaw, voice, config |
 | `prowl config [get\|set k v]` | Read/update configuration |
+
+---
+
+## Offline mode (save your wallet 💸)
+
+Prowl has two brains: the **local** `llama3.2:3b` (free, instant, offline) and an
+**online** escalation path (OpenClaw → Claude) for hard, agentic tasks. If you'd
+rather never make an online call, flip on **offline mode**:
+
+```bash
+prowl offline on      # 100% local model — no escalation, no online calls
+prowl offline status  # check
+prowl offline off     # re-enable escalation for open-ended tasks
+```
+
+There's also a toggle in the menu bar. In offline mode:
+
+- Quick answers, and **every built-in skill** (open apps, volume, files, web, **cleanup**, guarded shell, …) still work — they don't need the online agent.
+- Open-ended "go do this multi-step thing" requests are answered honestly by the local model, which will tell you when a task needs online mode instead of pretending to run an agent.
+
+> Note: in this setup OpenClaw runs on your **Claude subscription** (it reuses the
+> Claude CLI login), not a metered per-token API key — so escalation isn't billing
+> you per token. Offline mode still guarantees *zero* online usage if you want it.
 
 ---
 

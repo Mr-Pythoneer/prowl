@@ -31,6 +31,14 @@ DEFAULTS: dict[str, Any] = {
     "escalation_thinking": "medium",  # off|minimal|low|medium|high|xhigh|max
     "escalation_timeout": 600,        # seconds
 
+    # ---- offline mode -------------------------------------------------------
+    # When True, Prowl NEVER escalates to the online agent (OpenClaw/Claude) and
+    # runs entirely on the local model — no online/metered calls, easy on the
+    # wallet. Everything the local model + built-in skills can do still works;
+    # only open-ended "have the big agent go do this" tasks are unavailable.
+    # Toggle with `prowl offline on|off` or the menu-bar switch.
+    "offline": False,
+
     # ---- voice --------------------------------------------------------------
     "voice_enabled": True,
     "tts_voice": "Samantha",          # macOS `say` voice; "" = system default
@@ -96,6 +104,17 @@ class Config:
 
     def as_dict(self) -> dict[str, Any]:
         return copy.deepcopy(self._data)
+
+    def escalation_enabled(self) -> bool:
+        """True only if an escalation backend is set AND offline mode is off.
+
+        This is the single source of truth for "may Prowl make an online call?"
+        Router, Escalator, and the Orchestrator all defer to it.
+        """
+        return (
+            self.get("escalation_backend") not in ("off", "", None)
+            and not self.get("offline", False)
+        )
 
     # -- persistence ----------------------------------------------------------
     @classmethod

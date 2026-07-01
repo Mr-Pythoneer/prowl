@@ -4,6 +4,7 @@
     prowl listen                  capture one voice turn, then act
     prowl serve                   run the always-on menu-bar app
     prowl clean [--apply]         reclaim disk space (dry-run unless --apply)
+    prowl offline [on|off]        local-model-only mode (no online agent calls)
     prowl doctor                  check the environment (Ollama, model, OpenClaw, voice)
     prowl config [get|set k v]    read/update ~/.prowl/config.json
 
@@ -19,7 +20,8 @@ from .core.config import Config, CONFIG_PATH, ensure_home
 from .core.context import Context
 from .core.logs import get_logger
 
-_SUBCOMMANDS = {"listen", "serve", "clean", "doctor", "config", "help", "--help", "-h"}
+_SUBCOMMANDS = {"listen", "serve", "clean", "offline", "doctor", "config",
+                "help", "--help", "-h"}
 
 
 # --- shared front-end pieces ------------------------------------------------
@@ -130,6 +132,28 @@ def cmd_clean(argv: list[str]) -> int:
     return 0 if result.ok else 1
 
 
+def cmd_offline(argv: list[str]) -> int:
+    cfg = Config.load()
+    if not argv or argv[0] in ("status", "get"):
+        state = "ON — local model only, no online calls" if cfg.get("offline") \
+            else "OFF — hard tasks may escalate to the online agent"
+        print(f"🐾 Offline mode is {state}")
+        return 0
+    val = argv[0].lower()
+    if val in ("on", "true", "1", "yes", "enable"):
+        cfg.set("offline", True)
+        cfg.save()
+        print("🐾 Offline mode ON — running entirely on the local model. No online calls.")
+        return 0
+    if val in ("off", "false", "0", "no", "disable"):
+        cfg.set("offline", False)
+        cfg.save()
+        print("🐾 Offline mode OFF — open-ended tasks may escalate to the online agent.")
+        return 0
+    print("usage: prowl offline [on|off|status]")
+    return 1
+
+
 def cmd_doctor() -> int:
     from shutil import which
 
@@ -139,6 +163,9 @@ def cmd_doctor() -> int:
     print("Prowl doctor\n" + "=" * 40)
     ok = True
 
+    offline = bool(cfg.get("offline"))
+    print(f"•  Mode: {'OFFLINE (local model only)' if offline else 'online (escalation enabled)'}")
+
     lb = LocalBrain(cfg)
     if lb.available():
         print(f"✅ Ollama reachable, model '{cfg.model}' present")
@@ -147,7 +174,9 @@ def cmd_doctor() -> int:
         print(f"❌ Ollama or model '{cfg.model}' missing — run `ollama pull {cfg.model}`")
 
     backend = cfg.escalation_backend
-    if backend == "off":
+    if offline:
+        print("•  Escalation: OFF (offline mode — local model only)")
+    elif backend == "off":
         print("•  Escalation disabled (local only)")
     elif backend == "openclaw":
         print("✅ Escalation: openclaw" if which("openclaw") else "❌ openclaw not on PATH")
@@ -211,6 +240,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_serve()
     if cmd == "clean":
         return cmd_clean(argv[1:])
+    if cmd == "offline":
+        return cmd_offline(argv[1:])
     if cmd == "doctor":
         return cmd_doctor()
     if cmd == "config":
