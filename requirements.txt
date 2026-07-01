@@ -1,0 +1,9 @@
+# Prowl runtime dependencies.
+#
+# The CORE (CLI, router, skills, brain) uses only the Python standard library
+# plus pyobjc (already present on this Mac). The packages below are needed only
+# for the always-on menu-bar front-end and are lazy-imported, so `prowl` the CLI
+# works even if they are not installed.
+
+rumps>=0.4.0        # macOS menu-bar app (depends on pyobjc-framework-Cocoa, already installed)
+pynput>=1.7.6       # global hotkey / push-to-talk listener

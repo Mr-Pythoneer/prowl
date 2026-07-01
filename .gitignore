@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# Prowl runtime
+*.log
+prowl/helpers/prowl-listen          # compiled Swift STT helper (build locally)
+Prowl.app/                          # assembled app bundle (build locally)
+*.dSYM/
+
+# macOS
+.DS_Store
+
+# Local secrets / user config (config lives in ~/.prowl, never in repo)
+config/prowl.local.json

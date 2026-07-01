@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "prowl"
+version = "0.1.0"
+description = "A fast, local-AI, voice-first desktop agent for macOS — Siri's convenience with a real agent's brain (Siri + OpenClaw)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Skyler", email = "gf9929986@gmail.com" }]
+keywords = ["macos", "assistant", "voice", "ollama", "llama", "openclaw", "agent", "siri"]
+
+# Core has no hard deps beyond the stdlib + pyobjc (preinstalled). Front-end extras below.
+dependencies = []
+
+[project.optional-dependencies]
+gui = ["rumps>=0.4.0", "pynput>=1.7.6"]
+
+[project.scripts]
+prowl = "prowl.__main__:main"
+
+[tool.setuptools]
+packages = ["prowl", "prowl.brain", "prowl.skills", "prowl.voice", "prowl.ui", "prowl.core"]

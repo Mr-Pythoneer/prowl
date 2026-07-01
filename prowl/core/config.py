@@ -1,0 +1,119 @@
+"""Prowl configuration.
+
+Config lives at ``~/.prowl/config.json`` (never in the repo). Missing keys fall
+back to DEFAULTS, so a fresh machine works with no config file at all. Call
+``Config.load()`` to get a live object; ``.save()`` writes it back.
+"""
+from __future__ import annotations
+
+import copy
+import json
+import os
+from pathlib import Path
+from typing import Any
+
+PROWL_HOME = Path(os.path.expanduser("~/.prowl"))
+CONFIG_PATH = PROWL_HOME / "config.json"
+LOG_DIR = PROWL_HOME / "logs"
+
+DEFAULTS: dict[str, Any] = {
+    # ---- local fast model (Ollama) ------------------------------------------
+    "ollama_url": "http://127.0.0.1:11434",
+    "model": "llama3.2:3b",          # fast, instant — the user's chosen model
+    "model_timeout": 30,             # seconds for a local generation
+
+    # ---- escalation ("smart") backend ---------------------------------------
+    # How Prowl hands hard/open-ended tasks to a full agent.
+    #   "openclaw" -> `openclaw agent -m <task> --json`   (Opus 4.8, can run shell)
+    #   "claude"   -> `claude -p <task>`                  (Claude Code, non-interactive)
+    #   "off"      -> never escalate; local model only
+    "escalation_backend": "openclaw",
+    "escalation_thinking": "medium",  # off|minimal|low|medium|high|xhigh|max
+    "escalation_timeout": 600,        # seconds
+
+    # ---- voice --------------------------------------------------------------
+    "voice_enabled": True,
+    "tts_voice": "Samantha",          # macOS `say` voice; "" = system default
+    "tts_rate": 190,                  # words per minute
+    "stt_locale": "en-US",
+    "stt_max_seconds": 12,            # cap on a single dictation
+
+    # ---- interaction --------------------------------------------------------
+    "hotkey": "<cmd>+<shift>+space",  # pynput global hotkey to start listening
+    "wake_word": "prowl",             # spoken wake word (when always-listening)
+    "always_listening": False,        # off by default (privacy); hotkey-driven
+
+    # ---- safety -------------------------------------------------------------
+    # Destructive skills (cleanup, delete, shell writes) require confirmation
+    # and run as dry-runs unless explicitly applied.
+    "confirm_destructive": True,
+    "shell_skill_enabled": True,      # allow the guarded free-form shell skill
+    "trash_instead_of_delete": True,  # move to Trash (recoverable), never rm -rf
+
+    # ---- cleanup targets (junk categories the cleanup skill may reclaim) -----
+    # Each is scanned + sized first; nothing is removed without confirmation.
+    "cleanup_categories": [
+        "user_caches",        # ~/Library/Caches (app caches, regenerated)
+        "user_logs",          # ~/Library/Logs
+        "trash",              # empty ~/.Trash
+        "xcode_deriveddata",  # ~/Library/Developer/Xcode/DerivedData
+        "ios_device_support", # old ~/Library/Developer/Xcode/iOS DeviceSupport
+        "simulator_caches",   # ~/Library/Developer/CoreSimulator/Caches
+        "npm_cache",          # ~/.npm/_cacache
+        "pip_cache",          # ~/Library/Caches/pip
+        "homebrew_cache",     # `brew cleanup`
+        "ds_store",           # stray .DS_Store files under $HOME
+        "pycache",            # __pycache__ dirs under common project roots
+    ],
+}
+
+
+class Config:
+    """Dict-backed config with attribute access and disk persistence."""
+
+    def __init__(self, data: dict[str, Any] | None = None):
+        merged = copy.deepcopy(DEFAULTS)
+        if data:
+            merged.update(data)
+        self._data = merged
+
+    # -- dict-ish access ------------------------------------------------------
+    def __getitem__(self, key: str) -> Any:
+        return self._data[key]
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self._data.get(key, default)
+
+    def __getattr__(self, key: str) -> Any:
+        # Only called when normal attribute lookup fails.
+        try:
+            return self._data[key]
+        except KeyError as exc:
+            raise AttributeError(key) from exc
+
+    def set(self, key: str, value: Any) -> None:
+        self._data[key] = value
+
+    def as_dict(self) -> dict[str, Any]:
+        return copy.deepcopy(self._data)
+
+    # -- persistence ----------------------------------------------------------
+    @classmethod
+    def load(cls, path: Path = CONFIG_PATH) -> "Config":
+        data: dict[str, Any] = {}
+        if path.exists():
+            try:
+                data = json.loads(path.read_text())
+            except (json.JSONDecodeError, OSError):
+                # A broken config should never brick the assistant.
+                data = {}
+        return cls(data)
+
+    def save(self, path: Path = CONFIG_PATH) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(self._data, indent=2, sort_keys=True))
+
+
+def ensure_home() -> None:
+    """Make sure ~/.prowl and its log dir exist."""
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
