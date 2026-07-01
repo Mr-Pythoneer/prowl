@@ -57,6 +57,12 @@ class Skill:
     def available(self, ctx: Context | None = None) -> bool:
         return True
 
+    # Optional: a destructive skill can supply a custom confirmation question so
+    # the user sees exactly what will happen (e.g. the literal shell command)
+    # instead of a generic prompt. Return None to use the default.
+    def confirm_prompt(self, args: dict[str, Any]) -> str | None:
+        return None
+
 
 # --- registry ---------------------------------------------------------------
 REGISTRY: dict[str, Skill] = {}

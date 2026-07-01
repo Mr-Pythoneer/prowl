@@ -39,7 +39,10 @@ class Executor:
         # Safety gate: destructive skills confirm before doing anything, unless
         # we're in dry-run (they'll only describe) or confirmation is disabled.
         if skill.spec.destructive and not ctx.dry_run and self.cfg.confirm_destructive:
-            question = f"This will {skill.spec.description.lower()}. Go ahead?"
+            # A skill may show a specific prompt (e.g. the exact shell command);
+            # otherwise fall back to a generic description of what it will do.
+            question = skill.confirm_prompt(args) or \
+                f"This will {skill.spec.description.lower()}. Go ahead?"
             if not ctx.confirm(question):
                 return SkillResult.fail("Okay, cancelled — nothing was changed.")
 

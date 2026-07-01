@@ -9,14 +9,18 @@ dist/
 venv/
 env/
 
-# Prowl runtime
-*.log
-prowl/helpers/prowl-listen          # compiled Swift STT helper (build locally)
-Prowl.app/                          # assembled app bundle (build locally)
+# Prowl runtime — compiled Swift STT helper (build locally with scripts/build_stt.sh)
+prowl/helpers/prowl-listen
 *.dSYM/
+
+# Assembled app bundle (build locally)
+Prowl.app/
+
+# Logs
+*.log
 
 # macOS
 .DS_Store
 
-# Local secrets / user config (config lives in ~/.prowl, never in repo)
+# Local secrets / user config (real config lives in ~/.prowl, never in the repo)
 config/prowl.local.json
