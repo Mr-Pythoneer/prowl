@@ -84,6 +84,11 @@ _FPS_PLUGGED = {
 # the eyes close smoothly instead of snapping shut.
 _BLINK_FPS = 20.0
 
+# Talking stops on its own after this long with an empty bubble, and is capped
+# outright at the second value. Both are backstops, not the normal path.
+_TALK_SETTLE = 1.2
+_TALK_MAX = 40.0
+
 # States that hold a fixed pose *on battery*, so a tick with no blink can skip
 # the redraw entirely. On wall power these animate normally.
 _STATIC_STATES = ("idle", "sleeping")
@@ -367,6 +372,14 @@ class BuddyView(NSView):
         if blinking != self._was_blinking:
             self._was_blinking = blinking
             self._retime()          # burst for the blink, then back down
+        # "Talking" is driven by whoever is speaking, and if that caller never
+        # says it finished — voice switched off, a reply shown but not spoken,
+        # a speech process that died — he would mouth words forever at full
+        # frame rate. Ending it here means no caller can leave him stuck.
+        if self._trick is None and self._state == "talking":
+            if (not self._text and self._t > _TALK_SETTLE) or self._t > _TALK_MAX:
+                self.setState_("idle")
+
         # Left alone for long enough, he lies down for a nap. Any state change
         # or trick counts as activity, so this only fires when genuinely idle.
         if (self._state == "idle" and self._trick is None and not self._text

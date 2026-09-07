@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import time
 import sys
 import tempfile
 from pathlib import Path
@@ -63,8 +64,31 @@ def stop_helpers() -> int:
                               capture_output=True, timeout=10)
     except (FileNotFoundError, subprocess.SubprocessError, OSError):
         return 0
-    # pkill exits 0 when it signalled something, 1 when nothing matched.
-    return 1 if proc.returncode == 0 else 0
+    killed = 1 if proc.returncode == 0 else 0
+    if killed:
+        # pkill returns as soon as the signal is sent, but the old instance
+        # holds the microphone until it actually exits. Launching the next one
+        # into that gap is what produced the intermittent (and wrong)
+        # "I couldn't reach the microphone" — the new recogniser lost the race
+        # for the input device, which looks identical to a denied permission.
+        _await_helpers_gone()
+    return killed
+
+
+def _await_helpers_gone(timeout: float = 2.0) -> bool:
+    """Block until no helper is running, or *timeout* passes. True if clear."""
+    marker = "ProwlListen.app/Contents/MacOS/prowl-listen"
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            found = subprocess.run(["pgrep", "-f", marker],
+                                   capture_output=True, text=True, timeout=5)
+        except (FileNotFoundError, subprocess.SubprocessError, OSError):
+            return True
+        if not found.stdout.strip():
+            return True
+        time.sleep(0.05)
+    return False
 
 
 def app_path() -> Path:

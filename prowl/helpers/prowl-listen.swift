@@ -147,6 +147,8 @@ var exitCode: Int32 = 0
 var recognitionTask: SFSpeechRecognitionTask?
 var silenceTimer: DispatchSourceTimer?
 var restartTimer: DispatchSourceTimer?
+// The single-shot capture cap. Must outlive the block that arms it.
+var capTimer: DispatchSourceTimer?
 
 // The audio tap runs on a realtime thread and the state queue swaps the
 // request out from under it on every restart, so the pointer needs a lock.
@@ -201,6 +203,8 @@ func finish(code: Int32) {
         silenceTimer = nil
         restartTimer?.cancel()
         restartTimer = nil
+        capTimer?.cancel()
+        capTimer = nil
 
         if engine.isRunning {
             engine.stop()
@@ -341,13 +345,16 @@ if streaming {
 } else {
     err("prowl-listen: listening for up to \(Int(maxSeconds))s (locale \(localeID))...")
     // Hard cap: stop after maxSeconds no matter what.
-    let capTimer = DispatchSource.makeTimerSource(queue: stateQueue)
-    capTimer.schedule(deadline: .now() + maxSeconds)
-    capTimer.setEventHandler {
+    // Held at file scope: a DispatchSourceTimer declared inside this block
+    // would be deallocated the moment the block ends, and would never fire —
+    // leaving the helper listening forever with no cap.
+    capTimer = DispatchSource.makeTimerSource(queue: stateQueue)
+    capTimer!.schedule(deadline: .now() + maxSeconds)
+    capTimer!.setEventHandler {
         err("prowl-listen: reached max duration.")
         finish(code: 0)
     }
-    capTimer.resume()
+    capTimer!.resume()
 }
 
 // MARK: - wait for completion

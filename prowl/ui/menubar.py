@@ -215,7 +215,18 @@ class ProwlApp(rumps.App):
             return
         self._handle(text)
 
-    def _handle_trick(self, text: str) -> bool:
+    def _respond(self, text: str, silent: bool = False) -> None:
+        """Reply to the user: always visible, spoken unless *silent*.
+
+        Every reply path goes through here so a typed request can never end in
+        nothing at all — which is what "he doesn't respond" turned out to be.
+        """
+        if silent:
+            self._show_only(text)
+        else:
+            self._speak(text)
+
+    def _handle_trick(self, text: str, silent: bool = False) -> bool:
         """Perform a trick if that's what was asked for. True if handled."""
         if self.buddy is None:
             return False
@@ -225,11 +236,11 @@ class ProwlApp(rumps.App):
         self.log.info("trick: %s", name)
         self.buddy.play_trick(name)
         line = _TRICK_REPLIES.get(name)
-        if line and self.cfg.voice_enabled:
-            speak_async(line, self.cfg)
+        if line:
+            self._respond(line, silent)
         return True
 
-    def _handle_control(self, text: str) -> bool:
+    def _handle_control(self, text: str, silent: bool = False) -> bool:
         """Act on a control phrase ("stop", "hide", ...). True if handled.
 
         These bypass the router entirely: "stop" that waits on a model call has
@@ -251,7 +262,7 @@ class ProwlApp(rumps.App):
         elif action == "wake":
             self.cfg.set("always_listening", True)
             self.wake.start()
-            self._speak("I'm listening.")
+            self._respond("I'm listening.", silent)
         elif action == "hide":
             if self.buddy is not None:
                 self.buddy.hide_threadsafe()
@@ -263,14 +274,14 @@ class ProwlApp(rumps.App):
             self._buddy("idle")
         elif action == "repeat":
             if self._last_said:
-                self._speak(self._last_said)
+                self._respond(self._last_said, silent)
             else:
-                self._speak("I haven't said anything yet.")
+                self._respond("I haven't said anything yet.", silent)
         elif action == "help":
-            self._speak(
+            self._respond(
                 "Try: open Safari, turn it up, take a screenshot, what's on my "
                 "clipboard, clean up my Mac, or ask me anything. Say stop to "
-                "cut me off.")
+                "cut me off.", silent)
         self.cfg.save()
         return True
 
@@ -322,8 +333,11 @@ class ProwlApp(rumps.App):
         self._last_said = text
         self._tell(text)
         if self.buddy is not None:
-            # Hold the bubble long enough to read, then settle.
             self.buddy.say(text)
+            # Typed replies are never spoken, so nothing else would end the
+            # talking animation.
+            threading.Timer(max(1.5, min(8.0, len(text) / 14.0)),
+                            self._after_speaking).start()
 
     def _speak(self, text: str) -> None:
         """Show *text* (buddy bubble, else a banner) and say it aloud.
@@ -339,6 +353,10 @@ class ProwlApp(rumps.App):
         self._last_said = text
         self._tell(text)
         if not self.cfg.voice_enabled:
+            # Nothing will tell us when speech ended, because there is none.
+            # Settle after a read-length pause instead of staying in "talking".
+            threading.Timer(max(1.5, min(8.0, len(text) / 14.0)),
+                            self._after_speaking).start()
             return
 
         self.wake.mute()
@@ -448,7 +466,8 @@ class ProwlApp(rumps.App):
             return
         if not text:
             return
-        if self._handle_trick(text) or self._handle_control(text):
+        if self._handle_trick(text, silent=True) or \
+                self._handle_control(text, silent=True):
             return
         self._handle(text, silent=True)
 
