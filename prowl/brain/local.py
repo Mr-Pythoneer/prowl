@@ -80,7 +80,8 @@ class LocalBrain:
     def reply(self, user: str, *, persona: str = "") -> str:
         """A quick, spoken-length conversational answer."""
         system = (
-            "You are Prowl, a concise voice assistant on the user's Mac. "
+            f"You are {self.cfg.get('assistant_name', 'Bob')}, a concise voice "
+            "assistant on the user's Mac. "
             "Answer in one or two short spoken sentences. No markdown, no lists. "
             + persona
         )

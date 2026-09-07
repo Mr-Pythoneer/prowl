@@ -80,7 +80,12 @@ DEFAULTS: dict[str, Any] = {
     "hotkey": "<f5>",                # pynput global hotkey to start listening
                                  # (F5 is the mic key on Apple keyboards;
                                  #  bare key names are wrapped automatically)
-    "wake_word": "prowl",             # spoken wake word (when always-listening)
+    # What you call him. Used as the spoken wake word and in his own replies.
+    # Keep it two syllables or more if you can — a very short word ("Bob") is
+    # easier for the recognizer to hear inside ordinary conversation, which
+    # means the occasional false wake.
+    "assistant_name": "Bob",
+    "wake_word": "bob",               # spoken wake word (when always-listening)
     "always_listening": False,        # off by default (privacy); hotkey-driven
 
     # ---- safety -------------------------------------------------------------

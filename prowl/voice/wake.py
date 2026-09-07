@@ -80,13 +80,17 @@ class WakeListener:
     # -- config ---------------------------------------------------------------
     @property
     def wake_word(self) -> str:
-        return str(self.cfg.get("wake_word", "prowl") or "prowl").strip().lower()
+        default = str(self.cfg.get("assistant_name", "Bob")).lower()
+        return str(self.cfg.get("wake_word", default) or default).strip().lower()
 
     def _pattern(self) -> re.Pattern:
         word = re.escape(self.wake_word)
-        # Allow the recognizer's common mishearings of a short name by matching
-        # on a word boundary rather than the whole utterance.
-        return re.compile(rf"\b{_PREFIX}{word}\b[\s,.!?-]*(.*)", re.I)
+        # Anchored to the start of the utterance, after optional filler. A short
+        # name like "Bob" turns up mid-sentence in ordinary conversation ("I
+        # told Bob about it"), and matching anywhere would wake on all of it.
+        # Addressing someone by name naturally comes first, so this costs
+        # nothing and removes the whole class of false wake.
+        return re.compile(rf"^[\s,.]*{_PREFIX}{word}\b[\s,.!?-]*(.*)", re.I)
 
     # -- loop -----------------------------------------------------------------
     def _loop(self) -> None:

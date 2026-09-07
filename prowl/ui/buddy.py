@@ -25,12 +25,13 @@ from __future__ import annotations
 
 import math
 import random
+import subprocess
 import time
 
 import objc
 from AppKit import (
     NSApplication, NSBezierPath, NSColor, NSFont, NSFontAttributeName,
-    NSColorSpace, NSGradient,
+    NSColorSpace, NSCompositingOperationSourceOver, NSGradient, NSImage,
     NSMutableParagraphStyle, NSParagraphStyleAttributeName,
     NSLineBreakByWordWrapping, NSStringDrawingUsesLineFragmentOrigin,
     NSForegroundColorAttributeName, NSMakePoint, NSMakeRect, NSPanel, NSScreen,
@@ -38,7 +39,7 @@ from AppKit import (
     NSWindowCollectionBehaviorStationary, NSBackingStoreBuffered,
     NSWindowStyleMaskBorderless, NSNonactivatingPanelMask,
 )
-from Foundation import NSMakeSize, NSPoint, NSPointInRect
+from Foundation import NSMakeSize, NSPoint, NSPointInRect, NSZeroRect
 
 # Panel geometry. The character occupies the lower portion; the speech bubble
 # grows upward into the space above it.
@@ -50,6 +51,43 @@ _CHAR_W, _CHAR_H = 60, 84           # character's drawing box
 _MINI_SCALE = 0.55
 _MINI_W, _MINI_H = 74, 82
 _FPS = 30.0
+
+# Redrawing 30 times a second costs ~10% of a CPU core all day, which is real
+# battery on a laptop — and an idle sway does not need 30fps. The timer still
+# ticks at _FPS (cheap: it only advances a couple of floats) but the expensive
+# part, the redraw, is throttled per state. Blinks always draw, so they stay
+# smooth at any rate.
+# On battery, throttled: the idle sway does not need 30fps and the saving is
+# most of a CPU core over a day. Plugged in, there is nothing to save, so run
+# it smooth. Which set is used is decided by _on_ac_power(), rechecked
+# periodically — see BuddyView.tick_.
+_REDRAW_BATTERY = {
+    "talking": 1,        # 30fps — the mouth moves with speech, keep it smooth
+    "listening": 2,      # 15fps — pulsing rings
+    "thinking": 2,       # 15fps — bouncing dots
+    "idle": 6,           # 5fps  — a slow sway; imperceptible at this speed
+    "sleeping": 10,      # 3fps  — breathing
+}
+_REDRAW_PLUGGED = {
+    "talking": 1,
+    "listening": 1,
+    "thinking": 1,
+    "idle": 2,           # 15fps — visibly smoother sway
+    "sleeping": 4,
+}
+
+# How often to re-ask the OS about the power source (in animation frames).
+_POWER_POLL_FRAMES = int(_FPS * 20)
+
+
+def _on_ac_power() -> bool:
+    """True when the Mac is running on wall power. Never raises."""
+    try:
+        out = subprocess.run(["pmset", "-g", "batt"], capture_output=True,
+                             text=True, timeout=5).stdout
+    except (FileNotFoundError, subprocess.SubprocessError, OSError):
+        return True          # unknown: prefer the nicer animation
+    return "AC Power" in out or "AC attached" in out
 
 STATES = ("idle", "listening", "thinking", "talking", "sleeping")
 
@@ -100,6 +138,10 @@ class BuddyView(NSView):
         self._bubble_rect = NSMakeRect(0, 0, 0, 0)
         self._mini = False
         self._scale = 1.0
+        self._frame = 0
+        self._halo_cache = {}
+        self._on_ac = _on_ac_power()
+        self._power_checked = 0
         self._drag_origin = None
         self._on_click = None
         return self
@@ -166,8 +208,24 @@ class BuddyView(NSView):
 
         if self._text and time.time() > self._text_until:
             self._text = ""
+            self._frame = 0
+        self._halo_cache = {}
+        self._on_ac = _on_ac_power()
+        self._power_checked = 0          # the bubble vanishing must be drawn now
 
-        self.setNeedsDisplay_(True)
+        self._frame += 1
+        # Re-check the power source now and then; plugging in should smooth the
+        # animation out without restarting anything.
+        self._power_checked += 1
+        if self._power_checked >= _POWER_POLL_FRAMES:
+            self._power_checked = 0
+            self._on_ac = _on_ac_power()
+
+        table = _REDRAW_PLUGGED if self._on_ac else _REDRAW_BATTERY
+        every = table.get(self._state, 4)
+        # A blink is short and fast; drop the throttle while one is in progress.
+        if self._blink > 0.01 or self._frame % every == 0:
+            self.setNeedsDisplay_(True)
 
     # -- geometry -------------------------------------------------------------
     @objc.python_method
@@ -363,10 +421,27 @@ class BuddyView(NSView):
 
     @objc.python_method
     def _draw_halo(self, cx, cy, char_h=_CHAR_H):
-        """Radial glow behind the character, brightest at its centre."""
+        """Radial glow behind the character, brightest at its centre.
+
+        Rendered once into an image and blitted thereafter. Building the
+        gradient on every frame was the most expensive thing on screen and it
+        never changes, so caching it is most of the idle CPU saving.
+        """
         r = char_h * 1.02
-        # Breathes very slightly so it reads as alive rather than as a sticker.
-        r *= 1.0 + math.sin(self._t * 0.9) * 0.02
+        key = round(r, 1)
+        image = self._halo_cache.get(key)
+        if image is None:
+            image = self._render_halo(r)
+            self._halo_cache[key] = image
+        image.drawAtPoint_fromRect_operation_fraction_(
+            NSMakePoint(cx - r, cy - r), NSZeroRect,
+            NSCompositingOperationSourceOver, 1.0)
+
+    @objc.python_method
+    def _render_halo(self, r):
+        """Draw the glow once into its own image."""
+        image = NSImage.alloc().initWithSize_(NSMakeSize(r * 2, r * 2))
+        image.lockFocus()
         # Weighted toward transparent so the glow fades out well before the
         # oval's edge — an evenly-spaced ramp leaves a visible disc.
         grad = NSGradient.alloc().initWithColors_atLocations_colorSpace_(
@@ -377,8 +452,10 @@ class BuddyView(NSView):
             [0.0, 0.32, 0.66, 1.0],
             NSColorSpace.genericRGBColorSpace())
         oval = NSBezierPath.bezierPathWithOvalInRect_(
-            NSMakeRect(cx - r, cy - r, r * 2, r * 2))
+            NSMakeRect(0, 0, r * 2, r * 2))
         grad.drawInBezierPath_relativeCenterPosition_(oval, NSMakePoint(0.0, 0.0))
+        image.unlockFocus()
+        return image
 
     @objc.python_method
     def _draw_listening_ring(self, cx, cy, scale=1.0):

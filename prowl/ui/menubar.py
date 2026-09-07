@@ -78,8 +78,9 @@ class ProwlApp(rumps.App):
                 if cfg.get("buddy_greet", True):
                     # Introduce itself once, after the app loop is up — it is
                     # the only hint that clicking or F5 starts a voice turn.
+                    name = cfg.get("assistant_name", "Bob")
                     threading.Timer(1.2, lambda: self.buddy.say(
-                        "Hey! Press F5 or click me to talk.")).start()
+                        f"Hi, I'm {name}. Press F5 or click me to talk.")).start()
                     threading.Timer(6.0, lambda: self._buddy("idle")).start()
         except Exception:  # noqa: BLE001 - the buddy is a nicety
             self.log.exception("buddy unavailable; menu still works")

@@ -127,7 +127,8 @@ class Orchestrator:
         """
         if self.cfg.get("offline"):
             system = (
-                "You are Prowl running in OFFLINE mode: a local model only, with no "
+                f"You are {self.cfg.get('assistant_name', 'Bob')} running in OFFLINE "
+                "mode: a local model only, with no "
                 "online agent and no ability to run multi-step tool tasks. "
                 "If the user's request is a question, answer in one or two short spoken "
                 "sentences. If it needs actions/tools you don't have offline, say briefly "
