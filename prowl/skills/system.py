@@ -114,7 +114,8 @@ class SetVolume(Skill):
             "mute", "unmute", "silence the sound",
         ],
         args={
-            "level": "target volume 0-100, or 'mute' / 'unmute'",
+            "level": "target volume 0-100, or 'mute' / 'unmute' "
+                     "(optional if direction is given)",
             "direction": "optional: 'up' or 'down' to nudge by 10",
         },
     )

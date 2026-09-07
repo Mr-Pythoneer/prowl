@@ -125,13 +125,53 @@ class Router:
     def _validate(self, d: Decision) -> Decision:
         if d.action not in ("chat", "skill", "escalate"):
             d.action = "chat"
+        if not isinstance(d.args, dict):
+            d.args = {}
         if d.action == "skill":
             skill = skills_pkg.REGISTRY.get(d.skill or "")
             if skill is None or not skill.spec.enabled:
                 # Hallucinated / disabled skill -> escalate instead of guessing
                 # (or answer locally when escalation is off / offline mode).
-                d.action = "escalate" if self.cfg.escalation_enabled() else "chat"
-                d.skill = None
-        if not isinstance(d.args, dict):
-            d.args = {}
+                return self._reject(d)
+            # A small model sometimes picks a plausible-looking skill but leaves
+            # its arguments empty ("sort my Downloads folder" -> find_files with
+            # query=""). Running that asks the user a nonsense question, so
+            # treat a skill with no usable argument as a bad guess.
+            if _required_args(skill) and not _has_usable_arg(skill, d.args):
+                return self._reject(d)
         return d
+
+    def _reject(self, d: Decision) -> Decision:
+        """Discard a bad skill choice: hand it to the agent, or answer locally."""
+        d.action = "escalate" if self.cfg.escalation_enabled() else "chat"
+        d.skill = None
+        d.args = {}
+        return d
+
+
+def _required_args(skill) -> list[str]:
+    """Arg names the skill genuinely needs.
+
+    ``SkillSpec.args`` has no required/optional flag, so read it from the
+    description the skill author wrote: anything mentioning "optional" or a
+    "default" is not required.
+    """
+    required = []
+    for name, desc in (skill.spec.args or {}).items():
+        text = (desc or "").lower()
+        if "optional" in text or "default" in text or "omitted" in text:
+            continue
+        required.append(name)
+    return required
+
+
+def _has_usable_arg(skill, args: dict) -> bool:
+    """True if at least one required arg arrived with a non-empty value."""
+    for name in _required_args(skill):
+        val = args.get(name)
+        if val is None:
+            continue
+        if isinstance(val, str) and not val.strip():
+            continue
+        return True
+    return False
