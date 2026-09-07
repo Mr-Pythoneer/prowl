@@ -19,7 +19,7 @@ from typing import Any
 from .. import skills as skills_pkg
 from ..core.config import Config
 from . import prematch
-from .local import LocalBrain, LocalModelError
+from .brain import Brain, BrainError
 
 _SYSTEM = """You are the router for Prowl, a Mac voice assistant. Decide how to handle the \
 user's message and output ONLY one JSON object.
@@ -69,9 +69,9 @@ class Decision:
 
 
 class Router:
-    def __init__(self, config: Config, local: LocalBrain | None = None):
+    def __init__(self, config: Config, local: Brain | None = None):
         self.cfg = config
-        self.local = local or LocalBrain(config)
+        self.local = local or Brain(config)
 
     def decide(self, utterance: str) -> Decision:
         # 1) Fast, model-independent path: high-confidence phrase -> skill.
@@ -88,8 +88,9 @@ class Router:
         system = _SYSTEM.replace("{catalog}", catalog)
         try:
             raw = self.local.chat(system, utterance, json_mode=True, temperature=0.0)
-        except LocalModelError:
-            # Local model down: fall back to escalation if available, else chat.
+        except BrainError:
+            # No brain reachable at all (no cloud key/network AND no Ollama):
+            # fall back to escalation if available, else say so plainly.
             backend_on = self.cfg.escalation_enabled()
             return Decision(
                 action="escalate" if backend_on else "chat",

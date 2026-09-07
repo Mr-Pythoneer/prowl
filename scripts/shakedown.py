@@ -132,10 +132,10 @@ def run_routing(full: bool) -> list[str]:
     print(f"\n{DIM}── routing ──{RESET}")
     router = None
     if full:
-        from prowl.brain.local import LocalBrain
+        from prowl.brain.brain import Brain
         from prowl.brain.router import Router
         cfg = Config.load()
-        router = Router(cfg, LocalBrain(cfg))
+        router = Router(cfg, Brain(cfg))
 
     for utterance, expected in ROUTING_CASES:
         got = match(utterance)

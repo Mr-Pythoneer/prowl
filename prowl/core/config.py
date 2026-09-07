@@ -17,7 +17,25 @@ CONFIG_PATH = PROWL_HOME / "config.json"
 LOG_DIR = PROWL_HOME / "logs"
 
 DEFAULTS: dict[str, Any] = {
-    # ---- local fast model (Ollama) ------------------------------------------
+    # ---- brain selection ----------------------------------------------------
+    # "auto"  -> a cheap cloud model when one is configured and reachable,
+    #            falling back to Ollama on any network failure (default)
+    # "cloud" -> cloud only; failures surface instead of silently degrading
+    # "local" -> Ollama only; never touches the network
+    # `offline: true` forces "local" regardless.
+    "brain_backend": "auto",
+
+    # ---- cheap cloud model (OpenAI-compatible) ------------------------------
+    # Routing and one-line answers are small jobs, so a hosted model is quick
+    # and costs fractions of a cent — and keeps ~3 GB of GPU free on a laptop.
+    # The key comes from PROWL_CLOUD_API_KEY / DEEPSEEK_API_KEY first, so it
+    # need not be written to disk at all.
+    "cloud_base_url": "https://api.deepseek.com",
+    "cloud_model": "deepseek-chat",
+    "cloud_api_key": "",
+    "cloud_timeout": 20,
+
+    # ---- local fast model (Ollama), the offline fallback --------------------
     "ollama_url": "http://127.0.0.1:11434",
     "model": "llama3.2:3b",          # fast, instant — the user's chosen model
     "model_timeout": 30,             # seconds for a local generation

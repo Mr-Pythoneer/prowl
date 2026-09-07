@@ -14,7 +14,7 @@ from typing import Any
 
 from . import skills as skills_pkg
 from .brain.escalate import Escalator, EscalationError
-from .brain.local import LocalBrain, LocalModelError
+from .brain.brain import Brain, BrainError
 from .brain.router import Decision, Router
 from .core.config import Config
 from .core.context import Context
@@ -62,7 +62,7 @@ class Orchestrator:
     def __init__(self, config: Config | None = None):
         self.cfg = config or Config.load()
         skills_pkg.load_all()
-        self.local = LocalBrain(self.cfg)
+        self.local = Brain(self.cfg)
         self.router = Router(self.cfg, self.local)
         self.executor = Executor(self.cfg)
         self.escalator = Escalator(self.cfg)
@@ -94,8 +94,9 @@ class Orchestrator:
             return SkillResult.say(decision.reply)
         try:
             answer = self.local.reply(utterance)
-        except LocalModelError as exc:
-            msg = "My local brain is offline. Try again once Ollama is running."
+        except BrainError as exc:
+            msg = ("I can't reach a model right now — no cloud connection, and "
+                   "Ollama isn't running locally.")
             ctx.speak(msg)
             return SkillResult.fail(msg, detail=str(exc))
         ctx.speak(answer)
@@ -134,7 +135,7 @@ class Orchestrator:
             )
             try:
                 answer = self.local.chat(system, utterance, temperature=0.4)
-            except LocalModelError:
+            except BrainError:
                 answer = "My local brain is offline — start Ollama and try again."
             ctx.speak(answer)
             return SkillResult.say(answer)
