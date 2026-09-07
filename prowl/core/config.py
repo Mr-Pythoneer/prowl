@@ -71,6 +71,10 @@ DEFAULTS: dict[str, Any] = {
     "stt_max_seconds": 12,            # cap on a single dictation
 
     # ---- interaction --------------------------------------------------------
+    # ---- desktop buddy ------------------------------------------------------
+    "buddy_enabled": True,           # the floating animated character
+    "buddy_greet": True,             # wave hello when `prowl serve` starts
+
     "hotkey": "<f5>",                # pynput global hotkey to start listening
                                  # (F5 is the mic key on Apple keyboards;
                                  #  bare key names are wrapped automatically)

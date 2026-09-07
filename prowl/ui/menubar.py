@@ -28,6 +28,7 @@ from ..core.logs import get_logger
 from ..executor import Orchestrator
 from ..voice import stt
 from ..voice.tts import speak_async
+from ..voice.wake import WakeListener
 from . import hotkey, hud
 
 _TITLE = "🐾"
@@ -62,12 +63,44 @@ class ProwlApp(rumps.App):
             dry_run=False,
         )
 
+        # The desktop buddy. Optional: if AppKit drawing fails for any reason
+        # the assistant must still work, so a failure here is logged and
+        # forgotten rather than fatal.
+        self.buddy = None
+        try:
+            from .buddy import Buddy
+
+            self.buddy = Buddy(on_click=lambda: _run_bg(self._talk))
+            if cfg.get("buddy_enabled", True):
+                self.buddy.show()
+                if cfg.get("buddy_greet", True):
+                    # Introduce itself once, after the app loop is up — it is
+                    # the only hint that clicking or F5 starts a voice turn.
+                    threading.Timer(1.2, lambda: self.buddy.say(
+                        "Hey! Press F5 or click me to talk.")).start()
+                    threading.Timer(6.0, lambda: self._buddy("idle")).start()
+        except Exception:  # noqa: BLE001 - the buddy is a nicety
+            self.log.exception("buddy unavailable; menu still works")
+
+        # Wake-word listening ("Hey Prowl"), off unless asked for.
+        self.wake = WakeListener(
+            cfg,
+            on_wake=self._on_wake,
+            on_command=self._on_wake_command,
+            on_error=self._on_wake_error,
+        )
+
+        if cfg.get("always_listening", False):
+            self.wake.start()
+
         self.menu = [
             rumps.MenuItem("Talk (voice)", callback=self.on_talk),
             rumps.MenuItem("Type a command…", callback=self.on_type),
             rumps.MenuItem("Clean up my Mac", callback=self.on_cleanup),
             rumps.MenuItem("Toggle voice (on/off)", callback=self.on_toggle_voice),
             rumps.MenuItem("Toggle offline mode", callback=self.on_toggle_offline),
+            rumps.MenuItem("Show/hide buddy", callback=self.on_toggle_buddy),
+            rumps.MenuItem('Listen for "Hey Prowl"', callback=self.on_toggle_wake),
             rumps.MenuItem("Run doctor", callback=self.on_doctor),
             None,  # separator
             rumps.MenuItem("Quit", callback=self.on_quit),
@@ -87,13 +120,74 @@ class ProwlApp(rumps.App):
                 "Use the menu, or fix `hotkey` in ~/.prowl/config.json.",
             )
 
+    # -- menu handlers: buddy + wake -------------------------------------------
+    def on_toggle_buddy(self, _sender) -> None:
+        if self.buddy is None:
+            hud.notify(_TITLE, "The buddy couldn't start — see the log.")
+            return
+        try:
+            if self.buddy.is_visible():
+                self.buddy.hide()
+                self.cfg.set("buddy_enabled", False)
+            else:
+                self.buddy.show()
+                self.cfg.set("buddy_enabled", True)
+            self.cfg.save()
+        except Exception:  # noqa: BLE001
+            self.log.exception("toggling buddy failed")
+
+    def on_toggle_wake(self, _sender) -> None:
+        if self.wake.running:
+            self.wake.stop()
+            self.cfg.set("always_listening", False)
+            self._buddy("idle")
+            hud.notify(_TITLE, "Stopped listening for the wake word.")
+        else:
+            self.wake.start()
+            self.cfg.set("always_listening", True)
+            self._buddy("listening")
+            hud.notify(_TITLE, f'Listening for "{self.wake.wake_word}".')
+        self.cfg.save()
+
+    def _on_wake(self) -> None:
+        """Wake word heard — perk up and let the user know we're listening."""
+        self._buddy("listening")
+        if self.cfg.voice_enabled:
+            speak_async("Yes?", self.cfg)
+
+    def _on_wake_command(self, text: str) -> None:
+        self.log.info("wake command: %r", text)
+        self._handle(text)
+
+    def _on_wake_error(self, problem: str) -> None:
+        self.cfg.set("always_listening", False)
+        self._buddy("idle")
+        hud.notify(_TITLE, f"Stopped listening: {problem}")
+
+    # -- buddy ----------------------------------------------------------------
+    def _buddy(self, state: str) -> None:
+        """Set the buddy's animation state, if it exists."""
+        if self.buddy is not None:
+            try:
+                self.buddy.set_state(state)
+            except Exception:  # noqa: BLE001 - never let the mascot break a turn
+                self.log.exception("buddy state failed")
+
     # -- Context callbacks ---------------------------------------------------
     def _speak(self, text: str) -> None:
         """Show *text* as a notification and, if voice is on, say it aloud."""
         text = (text or "").strip()
         if not text:
             return
-        hud.notify(_TITLE, text)
+        # The buddy shows the words and animates; the notification is the
+        # fallback for when it is hidden.
+        if self.buddy is not None:
+            try:
+                self.buddy.say(text)
+            except Exception:  # noqa: BLE001
+                self.log.exception("buddy say failed")
+        else:
+            hud.notify(_TITLE, text)
         if self.cfg.voice_enabled:
             speak_async(text, self.cfg)
 
@@ -117,22 +211,30 @@ class ProwlApp(rumps.App):
         if not text:
             return
         try:
+            self._buddy("thinking")
             self.orch.handle(text, self.ctx)
         except Exception:  # noqa: BLE001 - a bad turn must not kill the worker
             self.log.exception("handling utterance failed")
             hud.notify(_TITLE, "Sorry — that request failed. See the log.")
+        finally:
+            # _speak() puts it in "talking"; settle back once the turn is done.
+            threading.Timer(2.5, lambda: self._buddy(
+                "listening" if self.wake.running else "idle")).start()
 
     def _talk(self) -> None:
         """Capture one utterance and act on it (background thread only)."""
+        self._buddy("listening")
         try:
             text, problem = stt.listen_once_ex(self.cfg)
         except Exception:  # noqa: BLE001 - STT failure is non-fatal
             self.log.exception("listen_once failed")
+            self._buddy("idle")
             hud.notify(_TITLE, "Couldn't start listening.")
             return
         if not text:
             # Report the actual reason (denied mic, missing helper) rather
             # than a blanket "didn't catch anything" the user can't act on.
+            self._buddy("idle")
             hud.notify(_TITLE, problem or "Didn't catch anything — only silence.")
             return
         hud.notify(_TITLE, f"Heard: {text}")
