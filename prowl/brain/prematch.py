@@ -18,8 +18,6 @@ a destructive action beyond what the skill's own safety layer already guards.
 from __future__ import annotations
 
 import re
-from functools import lru_cache
-from pathlib import Path
 from typing import Optional
 
 # NB: use typing.Optional (not `X | None`) here because this is a *runtime*
@@ -200,41 +198,13 @@ def _web_sites() -> dict:
     return SITES
 
 
-@lru_cache(maxsize=1)
-def _installed_apps() -> frozenset[str]:
-    """Lowercased names of installed .app bundles, scanned once per process."""
-    names: set[str] = set()
-    for d in (
-        Path("/Applications"),
-        Path("/Applications/Utilities"),
-        Path("/System/Applications"),
-        Path("/System/Applications/Utilities"),
-        Path.home() / "Applications",
-    ):
-        try:
-            for entry in d.iterdir():
-                if entry.suffix == ".app":
-                    names.add(entry.stem.lower())
-        except OSError:
-            continue
-    return frozenset(names)
-
-
 def _app_installed(name: str) -> bool:
-    """True if `name` is the actual name of an installed app.
-
-    Exact match, or an unambiguous vendor-prefixed one ("outlook" ->
-    "Microsoft Outlook"). Deliberately strict: a *leading* word must not count,
-    or "open google" would match "Google Chrome" when the user meant the site.
-    """
-    key = (name or "").strip().lower()
-    if not key:
+    """True if `name` names an installed app — see prowl.core.macapps."""
+    try:
+        from ..core.macapps import is_installed
+    except Exception:  # noqa: BLE001 - routing must survive a bad import
         return False
-    apps = _installed_apps()
-    if key in apps:
-        return True
-    hits = [a for a in apps if a.endswith(" " + key)]
-    return len(hits) == 1
+    return is_installed(name)
 
 
 def _clean_app(raw: str) -> str:

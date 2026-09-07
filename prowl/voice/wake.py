@@ -58,6 +58,8 @@ class WakeListener:
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._muted = threading.Event()
+        # Set while a foreground capture (F5, click) owns the microphone.
+        self._suspended = threading.Event()
         self._armed_until = 0.0
         self._path: Path | None = None
 
@@ -89,6 +91,24 @@ class WakeListener:
 
     def unmute(self) -> None:
         self._muted.clear()
+
+    # A manual voice turn needs the microphone to itself. Two recognisers
+    # fighting over the input device is what produced the intermittent
+    # "I couldn't reach the microphone" — one of them loses, seemingly at
+    # random, and reports it as a permission problem.
+    def suspend(self) -> None:
+        """Hand the microphone to a foreground capture."""
+        if self._suspended.is_set():
+            return
+        self._suspended.set()
+        stop_helpers()
+
+    def resume(self) -> None:
+        """Take the microphone back and start listening again."""
+        if not self._suspended.is_set():
+            return
+        self._suspended.clear()
+        # The loop notices the helper is gone and respawns it.
 
     # -- config ---------------------------------------------------------------
     @property
@@ -156,12 +176,22 @@ class WakeListener:
             if self._stop.is_set():
                 return
 
+            if self._suspended.is_set():
+                # Drop anything buffered while we were away, so the command
+                # just spoken into the foreground capture isn't replayed here.
+                try:
+                    offset = path.stat().st_size
+                except OSError:
+                    pass
+                last_check = 0.0        # re-check as soon as we resume
+                continue
+
             # If the helper died (crash, or the user revoked the microphone),
             # bring it back rather than going quietly deaf.
             if time.time() - last_check > 10:
                 last_check = time.time()
                 if not self._helper_alive():
-                    _log.warning("streaming helper died; restarting")
+                    _log.info("streaming helper gone; restarting")
                     new_path = self._spawn()
                     if new_path is None:
                         return

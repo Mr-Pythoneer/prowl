@@ -82,11 +82,17 @@ class OpenApp(Skill):
         app = str(args.get("app") or args.get("name") or "").strip()
         if not app:
             return SkillResult.fail("Which app should I open?")
+        # "Proton VPN" is ProtonVPN.app, "word" is Microsoft Word.app — speech
+        # gives us what was said, not what the bundle is called.
+        from ..core.macapps import resolve as _resolve_app
+
+        resolved = _resolve_app(app) or app
         if ctx.dry_run:
-            return SkillResult.say(f"Would open {app}.")
-        code, _, err = _run(["open", "-a", app])
+            return SkillResult.say(f"Would open {resolved}.")
+        code, _, err = _run(["open", "-a", resolved])
         if code == 0:
-            return SkillResult.say(f"Opening {app}.")
+            return SkillResult.say(f"Opening {resolved}.")
+        app = resolved
         # No app by that name. "open google" / "open reddit" mean a website far
         # more often than a missing app, so degrade to the web rather than
         # dead-ending. Imported lazily to keep this module import-light.

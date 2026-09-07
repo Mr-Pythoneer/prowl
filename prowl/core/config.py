@@ -78,6 +78,10 @@ DEFAULTS: dict[str, Any] = {
     "buddy_mini_hotkey": "<cmd>+<shift>+z",   # toggles compact mode
 
     "hotkey": "<f5>",                # pynput global hotkey to start listening
+    # Type instead of talking: same brain, same skills, but the answer is
+    # shown rather than spoken — for when the room is quiet or a command is
+    # too fiddly to dictate.
+    "type_hotkey": "<f4>",
                                  # (F5 is the mic key on Apple keyboards;
                                  #  bare key names are wrapped automatically)
     # What you call him. Used as the spoken wake word and in his own replies.
@@ -154,8 +158,38 @@ class Config:
         )
 
     # -- persistence ----------------------------------------------------------
+    @staticmethod
+    def load_env_file(path: Path | None = None) -> None:
+        """Load ``~/.prowl/env`` (KEY=VALUE lines) into the environment.
+
+        A launched .app inherits almost nothing from your shell, so an
+        ``export DEEPSEEK_API_KEY=...`` in ~/.zshrc is invisible to Bob even
+        though it works fine in a terminal. This file is the GUI-side
+        equivalent. Existing environment variables always win, so a terminal
+        run can still override it.
+        """
+        env_path = path or (CONFIG_PATH.parent / "env")
+        try:
+            text = env_path.read_text()
+        except OSError:
+            return
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("export "):
+                line = line[len("export "):].strip()
+            key, sep, value = line.partition("=")
+            if not sep:
+                continue
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = value
+
     @classmethod
     def load(cls, path: Path = CONFIG_PATH) -> "Config":
+        cls.load_env_file()
         data: dict[str, Any] = {}
         if path.exists():
             try:

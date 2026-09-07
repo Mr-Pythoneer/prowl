@@ -136,8 +136,13 @@ class Router:
         r"\b(rename|sort|organi[sz]e|move|delete|remove|tidy|group|archive|"
         r"upload|share|convert|compress|resize|batch|back ?up|clean out)\b", re.I)
     # Skills that act immediately and would be the wrong answer to such a task.
+    # Searching is as wrong an answer as acting: asked to *move* every .jpg on
+    # the desktop, a small model reaches for find_files and reports "I found
+    # 4000 images", which is neither what was asked nor obviously a failure.
     _ACTS_NOW = ("screenshot", "open_file", "reveal_in_finder", "open_app",
-                 "open_url", "open_site", "web_search", "media_control")
+                 "open_url", "open_site", "web_search", "media_control",
+                 "find_files", "recent_downloads", "clipboard",
+                 "list_running_apps", "cleanup")
 
     def _validate(self, d: Decision, utterance: str = "") -> Decision:
         if d.action not in ("chat", "skill", "escalate"):

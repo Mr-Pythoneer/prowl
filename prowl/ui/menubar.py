@@ -17,6 +17,7 @@ Public API:
 """
 from __future__ import annotations
 
+import dataclasses
 import subprocess
 import sys
 import threading
@@ -120,6 +121,9 @@ class ProwlApp(rumps.App):
         # is killed by macOS and takes the whole app with it.
         self._hotkey = None
         bindings = {cfg.hotkey: self._on_hotkey}
+        type_key = cfg.get("type_hotkey", "<f4>")
+        if type_key:
+            bindings[type_key] = self._on_type_hotkey
         mini_key = cfg.get("buddy_mini_hotkey", "<cmd>+<shift>+z")
         if mini_key and self.buddy is not None:
             bindings[mini_key] = self._on_mini_hotkey
@@ -266,6 +270,17 @@ class ProwlApp(rumps.App):
                 self.log.exception("buddy state failed")
 
     # -- Context callbacks ---------------------------------------------------
+    def _show_only(self, text: str) -> None:
+        """Show *text* without speaking it — the typed path's reply channel."""
+        text = (text or "").strip()
+        if not text:
+            return
+        self._last_said = text
+        self._tell(text)
+        if self.buddy is not None:
+            # Hold the bubble long enough to read, then settle.
+            self.buddy.say(text)
+
     def _speak(self, text: str) -> None:
         """Show *text* (buddy bubble, else a banner) and say it aloud.
 
@@ -307,14 +322,25 @@ class ProwlApp(rumps.App):
         return "button returned:Yes" in result.stdout
 
     # -- request plumbing ----------------------------------------------------
-    def _handle(self, text: str) -> None:
-        """Route *text* through the Orchestrator (background thread only)."""
+    def _handle(self, text: str, silent: bool = False) -> None:
+        """Route *text* through the Orchestrator (background thread only).
+
+        With ``silent`` the reply is shown but not spoken — the typed path,
+        for when you don't want the room to hear the answer.
+        """
         text = (text or "").strip()
         if not text:
             return
         try:
             self._buddy("thinking")
-            self.orch.handle(text, self.ctx)
+            if silent:
+                # Swap in a Context whose speak() only shows text. Building a
+                # new one (rather than toggling a flag) keeps a concurrent
+                # spoken turn unaffected.
+                ctx = dataclasses.replace(self.ctx, speak=self._show_only)
+            else:
+                ctx = self.ctx
+            self.orch.handle(text, ctx)
         except Exception:  # noqa: BLE001 - a bad turn must not kill the worker
             self.log.exception("handling utterance failed")
             self._tell("Sorry — that request failed. See the log.")
@@ -326,6 +352,10 @@ class ProwlApp(rumps.App):
     def _talk(self) -> None:
         """Capture one utterance and act on it (background thread only)."""
         self._buddy("listening")
+        # The wake listener holds the microphone continuously; two recognisers
+        # on one input device is what caused the intermittent (and misleading)
+        # "I couldn't reach the microphone".
+        self.wake.suspend()
         try:
             text, problem = stt.listen_once_ex(self.cfg)
         except Exception:  # noqa: BLE001 - STT failure is non-fatal
@@ -333,17 +363,44 @@ class ProwlApp(rumps.App):
             self._buddy("idle")
             self._tell("Couldn't start listening.")
             return
+        finally:
+            self.wake.resume()
         if not text:
             # Report the actual reason (denied mic, missing helper) rather
             # than a blanket "didn't catch anything" the user can't act on.
             self._buddy("idle")
             self._tell(problem or "Didn't catch anything — only silence.")
             return
+        if self._handle_control(text):
+            return
         self._handle(text)
 
     def _on_hotkey(self) -> None:
         """Hotkey callback: kick off a voice turn on a worker thread."""
         _run_bg(self._talk)
+
+    def _on_type_hotkey(self) -> None:
+        """Type-hotkey callback: ask for text, answer in text only."""
+        _run_bg(self._type_turn)
+
+    def _type_turn(self) -> None:
+        """One typed request, answered silently in the bubble.
+
+        Same brain and skills as a spoken turn — only the reply channel
+        differs. Nothing is said aloud, so this is usable in a meeting or with
+        headphones off.
+        """
+        try:
+            text = hud.ask_text("What do you need?")
+        except Exception:  # noqa: BLE001 - the dialog is not critical
+            self.log.exception("type prompt failed")
+            self._tell("Couldn't open the text box.")
+            return
+        if not text:
+            return
+        if self._handle_control(text):
+            return
+        self._handle(text, silent=True)
 
     # -- menu handlers (all wrapped; heavy work goes to a worker thread) ------
     def on_talk(self, _sender) -> None:
@@ -354,13 +411,7 @@ class ProwlApp(rumps.App):
             self._tell("Couldn't start listening.")
 
     def on_type(self, _sender) -> None:
-        try:
-            text = hud.ask_text("What do you need?")
-            if text:
-                _run_bg(self._handle, text)
-        except Exception:  # noqa: BLE001
-            self.log.exception("on_type failed")
-            self._tell("Couldn't read your command.")
+        _run_bg(self._type_turn)
 
     def on_cleanup(self, _sender) -> None:
         # Go through the Orchestrator so the destructive-skill confirm/dry-run

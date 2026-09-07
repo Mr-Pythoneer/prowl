@@ -74,6 +74,22 @@ def _app_name(args: dict[str, Any]) -> str:
     return _first_str(args, "app", "app_name", "name", "application", "target")
 
 
+def _resolve_app(name: str) -> str:
+    """Spoken app name -> the installed app's real name.
+
+    "Proton VPN" is ProtonVPN.app; speech gives us what was said, not what the
+    bundle is called. Left unchanged when nothing matches, so the caller still
+    reports the name the user actually used.
+    """
+    if not name:
+        return name
+    try:
+        from ..core.macapps import resolve
+    except Exception:  # noqa: BLE001 - a skill must never crash on an import
+        return name
+    return resolve(name) or name
+
+
 def _sanitize(name: str) -> str:
     """Strip quotes so a name can't break out of the AppleScript string."""
     return name.replace('"', "").replace("\\", "").strip()
@@ -108,7 +124,7 @@ class QuitApp(Skill):
     )
 
     def run(self, args: dict[str, Any], ctx: Context) -> SkillResult:
-        app = _sanitize(_app_name(args))
+        app = _resolve_app(_sanitize(_app_name(args)))
         if not app:
             return SkillResult.fail("Which app should I quit?")
         if ctx.dry_run:
@@ -129,7 +145,7 @@ class ActivateApp(Skill):
     )
 
     def run(self, args: dict[str, Any], ctx: Context) -> SkillResult:
-        app = _app_name(args)
+        app = _resolve_app(_app_name(args))
         if not app:
             return SkillResult.fail("Which app should I switch to?")
         if ctx.dry_run:
