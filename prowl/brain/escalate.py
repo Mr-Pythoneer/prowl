@@ -65,7 +65,7 @@ class Escalator:
         return text
 
     def _claude(self, task: str) -> str:
-        proc = self._exec(["claude", "-p", task])
+        proc = self._exec(["claude", "-p", "--output-format", "text", task])
         return proc.stdout.strip()
 
     def _exec(self, cmd: list[str]) -> subprocess.CompletedProcess:
@@ -82,5 +82,16 @@ class Escalator:
             raise EscalationError("The agent took too long and was stopped.") from exc
         if proc.returncode != 0:
             err = (proc.stderr or proc.stdout or "").strip()[:500]
+            # The CLI login expires periodically; that is a re-login, not a bug.
+            # Say so in words the user can act on instead of an exit code.
+            low = err.lower()
+            if any(k in low for k in (
+                "not logged in", "/login", "failed to authenticate",
+                "oauth", "session expired", "unauthorized",
+            )):
+                raise EscalationError(
+                    "The Claude CLI is signed out. Run `claude` in a terminal "
+                    "and use /login, then try again."
+                )
             raise EscalationError(f"Agent exited with {proc.returncode}: {err}")
         return proc

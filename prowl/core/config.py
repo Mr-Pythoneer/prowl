@@ -21,15 +21,21 @@ DEFAULTS: dict[str, Any] = {
     "ollama_url": "http://127.0.0.1:11434",
     "model": "llama3.2:3b",          # fast, instant — the user's chosen model
     "model_timeout": 30,             # seconds for a local generation
+    # Ollama loads a model at its MAX context unless told otherwise — for
+    # llama3.2:3b that is 131072 tokens and ~17 GB of GPU RAM, which makes a
+    # 24 GB Mac unusable while Prowl thinks. Prowl's prompts are small (a
+    # system prompt plus one utterance), so a modest window is plenty.
+    "num_ctx": 8192,                 # context window handed to Ollama
+    "model_keep_alive": "30s",       # free the GPU shortly after each turn
 
     # ---- escalation ("smart") backend ---------------------------------------
     # How Prowl hands hard/open-ended tasks to a full agent.
     #   "openclaw" -> `openclaw agent -m <task> --json`   (Opus 4.8, can run shell)
     #   "claude"   -> `claude -p <task>`                  (Claude Code, non-interactive)
     #   "off"      -> never escalate; local model only
-    "escalation_backend": "openclaw",
+    "escalation_backend": "claude",
     "escalation_thinking": "medium",  # off|minimal|low|medium|high|xhigh|max
-    "escalation_timeout": 600,        # seconds
+    "escalation_timeout": 120,        # seconds
 
     # ---- offline mode -------------------------------------------------------
     # When True, Prowl NEVER escalates to the online agent (OpenClaw/Claude) and
@@ -47,7 +53,7 @@ DEFAULTS: dict[str, Any] = {
     "stt_max_seconds": 12,            # cap on a single dictation
 
     # ---- interaction --------------------------------------------------------
-    "hotkey": "<cmd>+<shift>+space",  # pynput global hotkey to start listening
+    "hotkey": "<cmd>+<shift>+<space>",  # pynput global hotkey to start listening
     "wake_word": "prowl",             # spoken wake word (when always-listening)
     "always_listening": False,        # off by default (privacy); hotkey-driven
 

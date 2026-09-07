@@ -85,9 +85,22 @@ class OpenApp(Skill):
         if ctx.dry_run:
             return SkillResult.say(f"Would open {app}.")
         code, _, err = _run(["open", "-a", app])
-        if code != 0:
-            return SkillResult.fail(f"Couldn't open {app}.", detail=err or f"open -a {app}")
-        return SkillResult.say(f"Opening {app}.")
+        if code == 0:
+            return SkillResult.say(f"Opening {app}.")
+        # No app by that name. "open google" / "open reddit" mean a website far
+        # more often than a missing app, so degrade to the web rather than
+        # dead-ending. Imported lazily to keep this module import-light.
+        from .web import SITES, _open, _normalize_url, _looks_like_url
+
+        key = app.lower()
+        if key in SITES:
+            return _open(SITES[key], ctx)
+        if _looks_like_url(app):
+            return _open(_normalize_url(app), ctx)
+        return SkillResult.fail(
+            f"I couldn't find an app called {app}.",
+            detail=err or f"open -a {app}",
+        )
 
 
 # --- set_volume -------------------------------------------------------------
@@ -102,6 +115,7 @@ class SetVolume(Skill):
         ],
         args={
             "level": "target volume 0-100, or 'mute' / 'unmute'",
+            "direction": "optional: 'up' or 'down' to nudge by 10",
         },
     )
 
@@ -118,6 +132,19 @@ class SetVolume(Skill):
             return self._mute(False, ctx)
 
         level = _int_in_range(raw, 0, 100)
+
+        # Relative nudge: "turn it up" / "quieter" — read the current level and
+        # step from there, which is how people ask for volume out loud.
+        if level is None:
+            direction = str(args.get("direction") or "").strip().lower()
+            if direction in ("up", "down", "louder", "quieter"):
+                code, out, _ = _osascript("output volume of (get volume settings)")
+                current = _int_in_range(out, 0, 100) if code == 0 else None
+                if current is None:
+                    return SkillResult.fail("I couldn't read the current volume.")
+                step = 10 if direction in ("up", "louder") else -10
+                level = max(0, min(100, current + step))
+
         if level is None:
             return SkillResult.fail("Tell me a volume from 0 to 100, or say mute.")
         if ctx.dry_run:

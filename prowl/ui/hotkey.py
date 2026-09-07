@@ -13,10 +13,48 @@ Public API:
 from __future__ import annotations
 
 import logging
+import re
 
 from pynput import keyboard
 
 _log = logging.getLogger("prowl")
+
+# pynput requires named keys to be wrapped in angle brackets ("<space>"), while
+# ordinary character keys must be bare ("a"). A hand-edited config that writes
+# "space" instead of "<space>" raises ValueError and kills the whole listener,
+# so normalize before handing the string over.
+_NAMED_KEYS = {
+    "alt", "alt_l", "alt_r", "alt_gr", "backspace", "caps_lock", "cmd", "cmd_l",
+    "cmd_r", "ctrl", "ctrl_l", "ctrl_r", "delete", "down", "end", "enter", "esc",
+    "escape", "home", "insert", "left", "menu", "num_lock", "page_down",
+    "page_up", "pause", "print_screen", "right", "scroll_lock", "shift",
+    "shift_l", "shift_r", "space", "tab", "up", "media_play_pause",
+    "media_volume_mute", "media_volume_down", "media_volume_up",
+    "media_previous", "media_next",
+}
+
+
+def _normalize(hotkey_str: str) -> str:
+    """Return ``hotkey_str`` with bare named keys wrapped in angle brackets.
+
+    ``"<cmd>+<shift>+space"`` -> ``"<cmd>+<shift>+<space>"``. Already-wrapped
+    parts and single characters are left alone, so a correct string is a no-op.
+    """
+    parts = []
+    for raw in (hotkey_str or "").split("+"):
+        part = raw.strip()
+        if not part:
+            continue
+        if part.startswith("<") and part.endswith(">"):
+            parts.append(part.lower())
+            continue
+        low = part.lower()
+        if low in _NAMED_KEYS or re.fullmatch(r"f\d{1,2}", low):
+            parts.append(f"<{low}>")
+        else:
+            parts.append(part)
+    return "+".join(parts)
+
 
 
 def _guard(callback):
@@ -38,9 +76,12 @@ def start_hotkey(hotkey_str: str, callback) -> "keyboard.GlobalHotKeys":
     :func:`stop_hotkey`. The callback runs on the listener thread; its exceptions
     are swallowed and logged so a single failure never tears down the listener.
     """
-    listener = keyboard.GlobalHotKeys({hotkey_str: _guard(callback)})
+    normalized = _normalize(hotkey_str)
+    if normalized != hotkey_str:
+        _log.debug("normalized hotkey %r -> %r", hotkey_str, normalized)
+    listener = keyboard.GlobalHotKeys({normalized: _guard(callback)})
     listener.start()
-    _log.debug("hotkey listener started for %s", hotkey_str)
+    _log.debug("hotkey listener started for %s", normalized)
     return listener
 
 

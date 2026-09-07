@@ -62,7 +62,15 @@ class LocalBrain:
                 {"role": "user", "content": user},
             ],
             "stream": False,
-            "options": {"temperature": temperature},
+            "options": {
+                "temperature": temperature,
+                # Without num_ctx, Ollama allocates the model's maximum context
+                # (131k for llama3.2 => ~17 GB) and the Mac grinds to a halt.
+                "num_ctx": int(self.cfg.get("num_ctx", 8192)),
+            },
+            # Release the GPU soon after answering instead of holding it for
+            # the default 5 minutes.
+            "keep_alive": self.cfg.get("model_keep_alive", "30s"),
         }
         if json_mode:
             payload["format"] = "json"

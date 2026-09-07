@@ -14,6 +14,7 @@ plus Ollama; the GUI/voice forms lazy-import their extra pieces.
 from __future__ import annotations
 
 import subprocess
+import os
 import sys
 
 from .core.config import Config, CONFIG_PATH, ensure_home
@@ -189,15 +190,61 @@ def cmd_doctor() -> int:
         print("✅ Escalation: openclaw" if which("openclaw") else "❌ openclaw not on PATH")
         ok = ok and bool(which("openclaw"))
     elif backend == "claude":
-        print("✅ Escalation: claude" if which("claude") else "❌ claude not on PATH")
-        ok = ok and bool(which("claude"))
+        if not which("claude"):
+            ok = False
+            print("❌ claude not on PATH")
+        else:
+            # On PATH is not the same as logged in — the OAuth session expires.
+            import subprocess
+            try:
+                p = subprocess.run(
+                    ["claude", "-p", "--output-format", "text", "say OK"],
+                    capture_output=True, text=True, timeout=60,
+                )
+                blob = (p.stdout + p.stderr).lower()
+                if p.returncode == 0:
+                    print("✅ Escalation: claude (signed in)")
+                elif any(k in blob for k in ("authenticate", "oauth", "logged in", "login")):
+                    ok = False
+                    print("❌ Escalation: claude is SIGNED OUT — run `claude` "
+                          "in a terminal, then /login")
+                else:
+                    ok = False
+                    print(f"❌ Escalation: claude failed ({(p.stderr or p.stdout).strip()[:120]})")
+            except subprocess.SubprocessError:
+                ok = False
+                print("❌ Escalation: claude did not respond in time")
+
+    # The hotkey is the #1 silent failure: a bad string kills the listener and
+    # the app just feels dead. Parse it the same way pynput will.
+    hk = cfg.get("hotkey", "")
+    try:
+        from pynput import keyboard as _kb
+
+        from .ui.hotkey import _normalize
+        _kb.HotKey.parse(_normalize(hk))
+        print(f"✅ Hotkey {hk} parses")
+    except ImportError:
+        print("•  Hotkey unchecked (pynput not installed — menu bar only)")
+    except Exception as exc:  # noqa: BLE001
+        ok = False
+        print(f"❌ Hotkey {hk!r} is invalid ({exc}) — named keys need <angle brackets>")
 
     print("✅ `say` (TTS) available" if which("say") else "❌ `say` missing")
 
     from pathlib import Path
     helper = Path(__file__).parent / "helpers" / "prowl-listen"
-    print("✅ Voice STT helper built" if helper.exists()
-          else "•  Voice STT helper not built yet — run scripts/build_stt.sh")
+    if not helper.exists():
+        print("•  Voice STT helper not built yet — run scripts/build_stt.sh")
+    elif not os.access(helper, os.X_OK):
+        ok = False
+        print(f"❌ Voice STT helper is not executable — chmod +x {helper}")
+    else:
+        print("✅ Voice STT helper built and executable")
+        # Speech Recognition / Microphone are TCC-gated; a denial shows up as an
+        # instant empty transcript, which is indistinguishable from silence.
+        print("•  If voice returns nothing, check System Settings → Privacy & "
+              "Security → Microphone and Speech Recognition for Prowl/Terminal")
 
     print(f"•  Config: {CONFIG_PATH} ({'exists' if CONFIG_PATH.exists() else 'defaults'})")
     print("=" * 40)

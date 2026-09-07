@@ -18,6 +18,8 @@ a destructive action beyond what the skill's own safety layer already guards.
 from __future__ import annotations
 
 import re
+from functools import lru_cache
+from pathlib import Path
 from typing import Optional
 
 # NB: use typing.Optional (not `X | None`) here because this is a *runtime*
@@ -68,7 +70,7 @@ def match(utterance: str) -> Match:
         return ("toggle_dark_mode", {})
 
     # --- lock / sleep --------------------------------------------------------
-    if re.search(r"\block (?:the )?(?:screen|mac|computer|desktop|it)\b", t):
+    if re.search(r"\block (?:the |my )?(?:screen|mac|computer|laptop|desktop|it)\b", t):
         return ("lock_or_sleep", {"mode": "lock"})
     if re.search(r"\b(go to sleep|sleep the (?:display|screen)|put .* to sleep)\b", t):
         return ("lock_or_sleep", {"mode": "sleep"})
@@ -84,6 +86,24 @@ def match(utterance: str) -> Match:
             return ("set_volume", {"level": "mute"})
         if re.search(r"\bunmute\b", t):
             return ("set_volume", {"level": "unmute"})
+
+    # Relative / bare "turn it up|down" — no "volume" word needed, which is how
+    # people actually say it out loud.
+    m = re.search(r"\bturn (?:it|the (?:volume|sound|music|audio)|that)?\s*"
+                  r"(up|down)\b(?:\s+to\s+(\d{1,3}))?", t)
+    if m:
+        if m.group(2):
+            return ("set_volume", {"level": max(0, min(100, int(m.group(2))))})
+        return ("set_volume", {"direction": m.group(1)})
+    if re.fullmatch(r"\s*(?:please\s+)?(louder|quieter|volume up|volume down)\s*", t):
+        direction = "up" if t.strip() in ("louder", "volume up") else "down"
+        return ("set_volume", {"direction": direction})
+
+    # --- clipboard -----------------------------------------------------------
+    if re.search(r"\b(?:what'?s|what is)\s+(?:on|in)\s+(?:my|the)\s+clipboard\b", t) \
+            or re.search(r"\b(?:read|show|check)\s+(?:my|the)\s+clipboard\b", t) \
+            or re.fullmatch(r"\s*clipboard\s*", t):
+        return ("clipboard", {"action": "get"})
 
     # --- media control -------------------------------------------------------
     media = _media_action(t)
@@ -126,6 +146,13 @@ def match(utterance: str) -> Match:
                  u, re.I)
     if m:
         verb, target = m.group(1).lower(), _clean_app(m.group(2))
+        # A known web shorthand ("open google", "open youtube") is a site, not
+        # an app. Reuse the table open_site already owns instead of duplicating
+        # it here. Some names are both (Claude, Discord, Spotify) — an installed
+        # app wins there, and "switch to" always means a running app.
+        if verb != "switch to" and target.lower() in _web_sites() \
+                and not _app_installed(target):
+            return ("open_site", {"name": target.lower()})
         looks_like_not_app = re.search(
             r"https?://|www\.|\.[a-z]{2,4}(?:/|$)|\b(folder|file|website|site|page|url|link|tab)\b",
             target, re.I)
@@ -150,6 +177,52 @@ def _media_action(t: str) -> str | None:
         return {"pause": "pause", "resume": "play", "play": "play", "skip": "next"}[
             re.sub(r"[^a-z]", "", t)]
     return None
+
+
+def _web_sites() -> dict:
+    """The open_site shorthand table, imported lazily to avoid a cycle."""
+    try:
+        from ..skills.web import SITES
+    except Exception:  # noqa: BLE001 - routing must survive a bad import
+        return {}
+    return SITES
+
+
+@lru_cache(maxsize=1)
+def _installed_apps() -> frozenset[str]:
+    """Lowercased names of installed .app bundles, scanned once per process."""
+    names: set[str] = set()
+    for d in (
+        Path("/Applications"),
+        Path("/Applications/Utilities"),
+        Path("/System/Applications"),
+        Path("/System/Applications/Utilities"),
+        Path.home() / "Applications",
+    ):
+        try:
+            for entry in d.iterdir():
+                if entry.suffix == ".app":
+                    names.add(entry.stem.lower())
+        except OSError:
+            continue
+    return frozenset(names)
+
+
+def _app_installed(name: str) -> bool:
+    """True if `name` is the actual name of an installed app.
+
+    Exact match, or an unambiguous vendor-prefixed one ("outlook" ->
+    "Microsoft Outlook"). Deliberately strict: a *leading* word must not count,
+    or "open google" would match "Google Chrome" when the user meant the site.
+    """
+    key = (name or "").strip().lower()
+    if not key:
+        return False
+    apps = _installed_apps()
+    if key in apps:
+        return True
+    hits = [a for a in apps if a.endswith(" " + key)]
+    return len(hits) == 1
 
 
 def _clean_app(raw: str) -> str:

@@ -78,8 +78,14 @@ class ProwlApp(rumps.App):
         self._hotkey = None
         try:
             self._hotkey = hotkey.start_hotkey(cfg.hotkey, self._on_hotkey)
-        except Exception:  # noqa: BLE001 - hotkey is optional
+        except Exception as exc:  # noqa: BLE001 - hotkey is optional
             self.log.exception("hotkey unavailable; menu still works")
+            # Silent failure here is why Prowl "feels dead" — say so out loud.
+            hud.notify(
+                _TITLE,
+                f"Hotkey {cfg.hotkey} could not be registered ({exc}). "
+                "Use the menu, or fix `hotkey` in ~/.prowl/config.json.",
+            )
 
     # -- Context callbacks ---------------------------------------------------
     def _speak(self, text: str) -> None:
