@@ -474,38 +474,50 @@ class BuddyView(NSView):
 
     @objc.python_method
     def _draw_halo(self, cx, cy, char_h=_CHAR_H):
-        """Radial glow behind the character, brightest at its centre.
+        """Soft glow behind the character, so he reads on any wallpaper.
 
-        Rendered once into an image and blitted thereafter. Building the
-        gradient on every frame was the most expensive thing on screen and it
-        never changes, so caching it is most of the idle CPU saving.
+        Fitted to the window rather than sized purely from the character: a
+        circle wider than the panel gets clipped by its edge, and because the
+        gradient is still part-way through fading at that point the clip shows
+        up as a hard straight line across the glow.
+
+        Elliptical, so it can fill a panel that isn't square, and rendered once
+        into an image — rebuilding the gradient per frame was the single most
+        expensive thing on screen.
         """
-        r = char_h * 1.02
-        key = round(r, 1)
+        bounds = self.bounds()
+        # Reach the edge exactly, where the gradient has already reached zero
+        # alpha, so there is nothing left to cut off.
+        rx = min(char_h * 1.02, cx, bounds.size.width - cx)
+        ry = min(char_h * 1.02, cy, bounds.size.height - cy)
+        if rx <= 1 or ry <= 1:
+            return
+
+        key = (round(rx, 1), round(ry, 1))
         image = self._halo_cache.get(key)
         if image is None:
-            image = self._render_halo(r)
+            image = self._render_halo(rx, ry)
             self._halo_cache[key] = image
         image.drawAtPoint_fromRect_operation_fraction_(
-            NSMakePoint(cx - r, cy - r), NSZeroRect,
+            NSMakePoint(cx - rx, cy - ry), NSZeroRect,
             NSCompositingOperationSourceOver, 1.0)
 
     @objc.python_method
-    def _render_halo(self, r):
+    def _render_halo(self, rx, ry):
         """Draw the glow once into its own image."""
-        image = NSImage.alloc().initWithSize_(NSMakeSize(r * 2, r * 2))
+        image = NSImage.alloc().initWithSize_(NSMakeSize(rx * 2, ry * 2))
         image.lockFocus()
-        # Weighted toward transparent so the glow fades out well before the
-        # oval's edge — an evenly-spaced ramp leaves a visible disc.
+        # Weighted toward transparent so the glow is fully faded well before
+        # the edge — an evenly-spaced ramp leaves a visible disc.
         grad = NSGradient.alloc().initWithColors_atLocations_colorSpace_(
-            [_color((1.0, 1.0, 1.0), 0.34),
-             _color((1.0, 1.0, 1.0), 0.13),
-             _color((1.0, 1.0, 1.0), 0.03),
+            [_color((1.0, 1.0, 1.0), 0.30),
+             _color((1.0, 1.0, 1.0), 0.11),
+             _color((1.0, 1.0, 1.0), 0.02),
              _color((1.0, 1.0, 1.0), 0.0)],
-            [0.0, 0.32, 0.66, 1.0],
+            [0.0, 0.30, 0.62, 1.0],
             NSColorSpace.genericRGBColorSpace())
         oval = NSBezierPath.bezierPathWithOvalInRect_(
-            NSMakeRect(0, 0, r * 2, r * 2))
+            NSMakeRect(0, 0, rx * 2, ry * 2))
         grad.drawInBezierPath_relativeCenterPosition_(oval, NSMakePoint(0.0, 0.0))
         image.unlockFocus()
         return image

@@ -140,7 +140,13 @@ def match(utterance: str) -> Match:
         return ("find_files", {"query": q or u})
 
     # --- web search (explicit search verbs only) -----------------------------
-    m = re.search(r"\b(?:google|search (?:the web|online)(?: for)?|look up)\s+(.+)", u, re.I)
+    # "google X" means search — unless the sentence opened with a launch verb,
+    # where "Google" is part of the app's name ("open Google Chrome").
+    m = None
+    if not re.match(r"\s*(?:please\s+)?(?:open|launch|start|fire up|bring up|switch to)\b",
+                    u, re.I):
+        m = re.search(r"\b(?:google|search (?:the web|online)(?: for)?|look up)\s+(.+)",
+                      u, re.I)
     if m:
         return ("web_search", {"query": m.group(1).strip().rstrip("?.!")})
 
@@ -209,6 +215,10 @@ def _app_installed(name: str) -> bool:
 
 def _clean_app(raw: str) -> str:
     app = raw.strip().rstrip(".,!?")
+    # Leading filler: people say "open the app Proton VPN" as often as
+    # "open Proton VPN", and the recogniser transcribes it faithfully.
+    app = re.sub(r"^(?:the\s+)?(?:app|application|program)\s+", "", app, flags=re.I)
+    app = re.sub(r"^(?:my|the)\s+", "", app, flags=re.I)
     app = re.sub(r"\s+(app|application)$", "", app, flags=re.I)
     app = re.sub(r"\s+(please|now|for me)$", "", app, flags=re.I)
     return app.strip()

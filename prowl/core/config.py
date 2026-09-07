@@ -9,6 +9,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -181,6 +182,11 @@ class Config:
                 line = line[len("export "):].strip()
             key, sep, value = line.partition("=")
             if not sep:
+                # A bare token on its own line is almost always someone
+                # pasting their API key straight in. Accept it rather than
+                # silently ignoring the file and reporting "no API key".
+                if re.fullmatch(r"[A-Za-z0-9_\-]{20,}", line):
+                    os.environ.setdefault("PROWL_CLOUD_API_KEY", line)
                 continue
             key = key.strip()
             value = value.strip().strip('"').strip("'")
