@@ -14,6 +14,8 @@ Skills:
 """
 from __future__ import annotations
 
+import time
+
 import subprocess
 from typing import Any
 
@@ -206,7 +208,15 @@ class MediaControl(Skill):
 
         app = self._resolve_app(args)
         if not app:
-            return SkillResult.fail("Neither Music nor Spotify is running.")
+            # "play some music" with nothing running should start playing, not
+            # report that nothing is running. Only for play — pausing or
+            # skipping when nothing is open is genuinely a no-op.
+            if command in ("play", "playpause") and not ctx.dry_run:
+                app = self._launch_default(args)
+            if not app:
+                return SkillResult.fail(
+                    "Neither Music nor Spotify is running.",
+                    detail="Open one of them and try again.")
 
         if ctx.dry_run:
             return SkillResult.say(f"Would {action_word} in {app}.")
@@ -215,6 +225,30 @@ class MediaControl(Skill):
         if r.returncode == 0:
             return SkillResult.say(self._confirmation(command, app))
         return SkillResult.fail(f"Couldn't control {app}.", detail=r.stderr.strip())
+
+    @staticmethod
+    def _launch_default(args: dict[str, Any]) -> str:
+        """Open the requested (or default) media app and wait for it to answer."""
+        wanted = _sanitize(_app_name(args))
+        target = None
+        for known in MEDIA_APPS:
+            if wanted and wanted.lower() == known.lower():
+                target = known
+                break
+        target = target or MEDIA_APPS[0]
+        try:
+            proc = subprocess.run(["open", "-a", target], capture_output=True,
+                                  text=True, timeout=15)
+        except (FileNotFoundError, subprocess.SubprocessError):
+            return ""
+        if proc.returncode != 0:
+            return ""
+        # AppleScript on a cold-started app fails until it is ready.
+        for _ in range(20):
+            if _is_running(target):
+                return target
+            time.sleep(0.25)
+        return ""
 
     @staticmethod
     def _resolve_app(args: dict[str, Any]) -> str:

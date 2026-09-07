@@ -73,7 +73,9 @@ DEFAULTS: dict[str, Any] = {
     # ---- interaction --------------------------------------------------------
     # ---- desktop buddy ------------------------------------------------------
     "buddy_enabled": True,           # the floating animated character
-    "buddy_greet": True,             # wave hello when `prowl serve` starts
+    "buddy_greet": True,             # say hello when `prowl serve` starts
+    "buddy_mini": False,             # compact mode: character only, no bubble
+    "buddy_mini_hotkey": "<cmd>+<shift>+z",   # toggles compact mode
 
     "hotkey": "<f5>",                # pynput global hotkey to start listening
                                  # (F5 is the mic key on Apple keyboards;

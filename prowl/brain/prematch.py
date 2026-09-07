@@ -30,7 +30,12 @@ Match = Optional["tuple[str, dict]"]
 _FILE_NOUN = (
     r"file|files|document|documents|doc|pdf|pdfs|photo|photos|image|images|"
     r"picture|pictures|folder|folders|download|downloads|screenshot|screenshots|"
-    r"note|notes|spreadsheet|video|videos|song|songs|\.[a-z0-9]{2,4}"
+    r"note|notes|spreadsheet|video|videos|song|songs|"
+    # Named document kinds people actually search for by name.
+    r"resume|resumes|cv|invoice|invoices|receipt|receipts|essay|essays|"
+    r"report|reports|presentation|presentations|slide|slides|contract|"
+    r"contracts|assignment|assignments|homework|paper|papers|book|books|"
+    r"\.[a-z0-9]{2,4}"
 )
 
 
@@ -55,8 +60,15 @@ def match(utterance: str) -> Match:
         return ("cleanup", {})
 
     # --- screenshot ----------------------------------------------------------
-    if re.search(r"\b(take (?:a )?)?(?:screenshot|screen shot|screen capture)\b", t) \
-            or re.search(r"\bcapture (?:the |my )?screen\b", t):
+    # "rename all my screenshots by date" mentions screenshots but is a task for
+    # the agent, not a request to take one. Require the absence of a verb that
+    # operates *on* existing files.
+    _manages_files = re.search(
+        r"\b(rename|sort|organi[sz]e|move|delete|remove|tidy|group|archive|"
+        r"upload|share|convert|compress|resize|batch)\b", t)
+    if not _manages_files and (
+            re.search(r"\b(take (?:a )?)?(?:screenshot|screen shot|screen capture)\b", t)
+            or re.search(r"\bcapture (?:the |my )?screen\b", t)):
         mode = "full" if re.search(r"\b(full|whole|entire)\b", t) else "region"
         return ("screenshot", {"mode": mode})
 

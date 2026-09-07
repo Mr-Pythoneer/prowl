@@ -23,7 +23,7 @@ import logging
 import re
 import threading
 
-from .stt import listen_once_ex
+from .stt import listen_once_ex, stop_helpers
 
 _log = logging.getLogger("prowl")
 
@@ -72,6 +72,9 @@ class WakeListener:
     def stop(self) -> None:
         self._stop.set()
         self._thread = None
+        # The in-flight capture is a detached app; without this it keeps the
+        # microphone until its window ends.
+        stop_helpers()
         _log.info("wake listener stopped")
 
     # -- config ---------------------------------------------------------------

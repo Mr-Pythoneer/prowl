@@ -48,6 +48,25 @@ def _coerce_seconds(value) -> int:
     return max(_MIN_SECONDS, min(_MAX_SECONDS, seconds))
 
 
+def stop_helpers() -> int:
+    """Kill any running ProwlListen instance. Returns how many were killed.
+
+    LaunchServices starts the helper detached, so it is not a child of Prowl:
+    if Prowl exits (or a wake-listening loop is abandoned) the helper keeps
+    running to the end of its window, holding the microphone. Two of them at
+    once means two recognizers fighting over the input device, so a new capture
+    always clears the field first.
+    """
+    marker = "ProwlListen.app/Contents/MacOS/prowl-listen"
+    try:
+        proc = subprocess.run(["pkill", "-f", marker],
+                              capture_output=True, timeout=10)
+    except (FileNotFoundError, subprocess.SubprocessError, OSError):
+        return 0
+    # pkill exits 0 when it signalled something, 1 when nothing matched.
+    return 1 if proc.returncode == 0 else 0
+
+
 def app_path() -> Path:
     """Path to the ProwlListen.app bundle (may not exist on an old build)."""
     return Path(__file__).resolve().parent.parent / "helpers" / "ProwlListen.app"
@@ -124,6 +143,8 @@ def _listen_via_launch_services(app: Path, max_seconds: int, locale: str) -> tup
     LaunchServices makes the bundle its own responsible process, so one grant
     covers every front-end. ``open`` gives us no stdout, hence the temp file.
     """
+    # Never run two recognizers at once — see stop_helpers().
+    stop_helpers()
     tmp = tempfile.NamedTemporaryFile(prefix="prowl-stt-", suffix=".txt", delete=False)
     tmp.close()
     out_file = Path(tmp.name)

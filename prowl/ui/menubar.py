@@ -71,6 +71,8 @@ class ProwlApp(rumps.App):
             from .buddy import Buddy
 
             self.buddy = Buddy(on_click=lambda: _run_bg(self._talk))
+            if cfg.get("buddy_mini", False):
+                self.buddy.set_mini(True)
             if cfg.get("buddy_enabled", True):
                 self.buddy.show()
                 if cfg.get("buddy_greet", True):
@@ -100,6 +102,7 @@ class ProwlApp(rumps.App):
             rumps.MenuItem("Toggle voice (on/off)", callback=self.on_toggle_voice),
             rumps.MenuItem("Toggle offline mode", callback=self.on_toggle_offline),
             rumps.MenuItem("Show/hide buddy", callback=self.on_toggle_buddy),
+            rumps.MenuItem("Mini buddy (⌘⇧Z)", callback=self.on_toggle_mini),
             rumps.MenuItem('Listen for "Hey Prowl"', callback=self.on_toggle_wake),
             rumps.MenuItem("Run doctor", callback=self.on_doctor),
             None,  # separator
@@ -108,22 +111,26 @@ class ProwlApp(rumps.App):
 
         # Global hotkey → same voice flow as the menu item. A missing pynput (or
         # any listener failure) must not stop the app from launching.
+        # One listener for every hotkey: a second event tap in the same process
+        # is killed by macOS and takes the whole app with it.
         self._hotkey = None
+        bindings = {cfg.hotkey: self._on_hotkey}
+        mini_key = cfg.get("buddy_mini_hotkey", "<cmd>+<shift>+z")
+        if mini_key and self.buddy is not None:
+            bindings[mini_key] = self._on_mini_hotkey
         try:
-            self._hotkey = hotkey.start_hotkey(cfg.hotkey, self._on_hotkey)
+            self._hotkey = hotkey.start_hotkeys(bindings)
         except Exception as exc:  # noqa: BLE001 - hotkey is optional
             self.log.exception("hotkey unavailable; menu still works")
             # Silent failure here is why Prowl "feels dead" — say so out loud.
-            hud.notify(
-                _TITLE,
-                f"Hotkey {cfg.hotkey} could not be registered ({exc}). "
+            self._tell(f"Hotkey {cfg.hotkey} could not be registered ({exc}). "
                 "Use the menu, or fix `hotkey` in ~/.prowl/config.json.",
             )
 
     # -- menu handlers: buddy + wake -------------------------------------------
     def on_toggle_buddy(self, _sender) -> None:
         if self.buddy is None:
-            hud.notify(_TITLE, "The buddy couldn't start — see the log.")
+            self._tell("The buddy couldn't start — see the log.")
             return
         try:
             if self.buddy.is_visible():
@@ -136,17 +143,31 @@ class ProwlApp(rumps.App):
         except Exception:  # noqa: BLE001
             self.log.exception("toggling buddy failed")
 
+    def on_toggle_mini(self, _sender) -> None:
+        self._on_mini_hotkey()
+
+    def _on_mini_hotkey(self) -> None:
+        """Toggle compact mode and remember the choice."""
+        if self.buddy is None:
+            return
+        try:
+            self.buddy.toggle_mini()
+            self.cfg.set("buddy_mini", not self.cfg.get("buddy_mini", False))
+            self.cfg.save()
+        except Exception:  # noqa: BLE001
+            self.log.exception("toggling mini buddy failed")
+
     def on_toggle_wake(self, _sender) -> None:
         if self.wake.running:
             self.wake.stop()
             self.cfg.set("always_listening", False)
             self._buddy("idle")
-            hud.notify(_TITLE, "Stopped listening for the wake word.")
+            self._tell("Stopped listening for the wake word.")
         else:
             self.wake.start()
             self.cfg.set("always_listening", True)
             self._buddy("listening")
-            hud.notify(_TITLE, f'Listening for "{self.wake.wake_word}".')
+            self._tell(f'Listening for "{self.wake.wake_word}".')
         self.cfg.save()
 
     def _on_wake(self) -> None:
@@ -162,9 +183,28 @@ class ProwlApp(rumps.App):
     def _on_wake_error(self, problem: str) -> None:
         self.cfg.set("always_listening", False)
         self._buddy("idle")
-        hud.notify(_TITLE, f"Stopped listening: {problem}")
+        self._tell(f"Stopped listening: {problem}")
 
     # -- buddy ----------------------------------------------------------------
+    def _tell(self, text: str) -> None:
+        """Show a short message. Prefers the buddy's bubble.
+
+        macOS notification banners for every step (heard-you, voice-on, ...)
+        were more annoying than useful, so they are now only the fallback for
+        when the buddy is hidden.
+        """
+        text = (text or "").strip()
+        if not text:
+            return
+        if self.buddy is not None:
+            try:
+                if self.buddy.is_visible():
+                    self.buddy.say(text)
+                    return
+            except Exception:  # noqa: BLE001
+                self.log.exception("buddy say failed")
+        hud.notify(_TITLE, text)
+
     def _buddy(self, state: str) -> None:
         """Set the buddy's animation state, if it exists."""
         if self.buddy is not None:
@@ -175,19 +215,11 @@ class ProwlApp(rumps.App):
 
     # -- Context callbacks ---------------------------------------------------
     def _speak(self, text: str) -> None:
-        """Show *text* as a notification and, if voice is on, say it aloud."""
+        """Show *text* (buddy bubble, else a banner) and say it aloud."""
         text = (text or "").strip()
         if not text:
             return
-        # The buddy shows the words and animates; the notification is the
-        # fallback for when it is hidden.
-        if self.buddy is not None:
-            try:
-                self.buddy.say(text)
-            except Exception:  # noqa: BLE001
-                self.log.exception("buddy say failed")
-        else:
-            hud.notify(_TITLE, text)
+        self._tell(text)
         if self.cfg.voice_enabled:
             speak_async(text, self.cfg)
 
@@ -215,7 +247,7 @@ class ProwlApp(rumps.App):
             self.orch.handle(text, self.ctx)
         except Exception:  # noqa: BLE001 - a bad turn must not kill the worker
             self.log.exception("handling utterance failed")
-            hud.notify(_TITLE, "Sorry — that request failed. See the log.")
+            self._tell("Sorry — that request failed. See the log.")
         finally:
             # _speak() puts it in "talking"; settle back once the turn is done.
             threading.Timer(2.5, lambda: self._buddy(
@@ -229,15 +261,14 @@ class ProwlApp(rumps.App):
         except Exception:  # noqa: BLE001 - STT failure is non-fatal
             self.log.exception("listen_once failed")
             self._buddy("idle")
-            hud.notify(_TITLE, "Couldn't start listening.")
+            self._tell("Couldn't start listening.")
             return
         if not text:
             # Report the actual reason (denied mic, missing helper) rather
             # than a blanket "didn't catch anything" the user can't act on.
             self._buddy("idle")
-            hud.notify(_TITLE, problem or "Didn't catch anything — only silence.")
+            self._tell(problem or "Didn't catch anything — only silence.")
             return
-        hud.notify(_TITLE, f"Heard: {text}")
         self._handle(text)
 
     def _on_hotkey(self) -> None:
@@ -250,7 +281,7 @@ class ProwlApp(rumps.App):
             _run_bg(self._talk)
         except Exception:  # noqa: BLE001
             self.log.exception("on_talk failed")
-            hud.notify(_TITLE, "Couldn't start listening.")
+            self._tell("Couldn't start listening.")
 
     def on_type(self, _sender) -> None:
         try:
@@ -259,7 +290,7 @@ class ProwlApp(rumps.App):
                 _run_bg(self._handle, text)
         except Exception:  # noqa: BLE001
             self.log.exception("on_type failed")
-            hud.notify(_TITLE, "Couldn't read your command.")
+            self._tell("Couldn't read your command.")
 
     def on_cleanup(self, _sender) -> None:
         # Go through the Orchestrator so the destructive-skill confirm/dry-run
@@ -268,38 +299,36 @@ class ProwlApp(rumps.App):
             _run_bg(self._handle, "clean up my mac")
         except Exception:  # noqa: BLE001
             self.log.exception("on_cleanup failed")
-            hud.notify(_TITLE, "Couldn't start cleanup.")
+            self._tell("Couldn't start cleanup.")
 
     def on_toggle_voice(self, _sender) -> None:
         try:
             new_state = not bool(self.cfg.voice_enabled)
             self.cfg.set("voice_enabled", new_state)
             self.cfg.save()
-            hud.notify(_TITLE, "Voice on 🔊" if new_state else "Voice off 🔇")
+            self._tell("Voice on 🔊" if new_state else "Voice off 🔇")
         except Exception:  # noqa: BLE001
             self.log.exception("on_toggle_voice failed")
-            hud.notify(_TITLE, "Couldn't change the voice setting.")
+            self._tell("Couldn't change the voice setting.")
 
     def on_toggle_offline(self, _sender) -> None:
         try:
             new_state = not bool(self.cfg.get("offline"))
             self.cfg.set("offline", new_state)
             self.cfg.save()
-            hud.notify(
-                _TITLE,
-                "Offline mode ON — local model only 💸" if new_state
+            self._tell("Offline mode ON — local model only 💸" if new_state
                 else "Offline mode OFF — online agent available",
             )
         except Exception:  # noqa: BLE001
             self.log.exception("on_toggle_offline failed")
-            hud.notify(_TITLE, "Couldn't change offline mode.")
+            self._tell("Couldn't change offline mode.")
 
     def on_doctor(self, _sender) -> None:
         try:
             _run_bg(self._doctor)
         except Exception:  # noqa: BLE001
             self.log.exception("on_doctor failed")
-            hud.notify(_TITLE, "Couldn't run doctor.")
+            self._tell("Couldn't run doctor.")
 
     def _doctor(self) -> None:
         """Run ``python3 -m prowl doctor`` and show the summary (worker thread)."""
@@ -311,13 +340,13 @@ class ProwlApp(rumps.App):
                 timeout=_DOCTOR_TIMEOUT,
             )
         except FileNotFoundError:
-            hud.notify(_TITLE, "Couldn't find Python to run doctor.")
+            self._tell("Couldn't find Python to run doctor.")
             return
         except subprocess.TimeoutExpired:
-            hud.notify(_TITLE, "Doctor timed out.")
+            self._tell("Doctor timed out.")
             return
         except OSError:
-            hud.notify(_TITLE, "Couldn't run doctor.")
+            self._tell("Couldn't run doctor.")
             return
         report = (proc.stdout or proc.stderr or "").strip() or "No output."
         # Show the full report in a dialog; notifications truncate long text.
@@ -331,8 +360,11 @@ class ProwlApp(rumps.App):
     def on_quit(self, _sender) -> None:
         try:
             hotkey.stop_hotkey(self._hotkey)
+            # Leaves no detached helper holding the microphone.
+            self.wake.stop()
+            stt.stop_helpers()
         except Exception:  # noqa: BLE001 - shutdown must not raise
-            self.log.exception("stopping hotkey failed")
+            self.log.exception("shutdown cleanup failed")
         rumps.quit_application()
 
 

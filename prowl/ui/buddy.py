@@ -30,17 +30,25 @@ import time
 import objc
 from AppKit import (
     NSApplication, NSBezierPath, NSColor, NSFont, NSFontAttributeName,
+    NSColorSpace, NSGradient,
+    NSMutableParagraphStyle, NSParagraphStyleAttributeName,
+    NSLineBreakByWordWrapping, NSStringDrawingUsesLineFragmentOrigin,
     NSForegroundColorAttributeName, NSMakePoint, NSMakeRect, NSPanel, NSScreen,
     NSString, NSTimer, NSView, NSWindowCollectionBehaviorCanJoinAllSpaces,
     NSWindowCollectionBehaviorStationary, NSBackingStoreBuffered,
     NSWindowStyleMaskBorderless, NSNonactivatingPanelMask,
 )
-from Foundation import NSMakeSize, NSPoint
+from Foundation import NSMakeSize, NSPoint, NSPointInRect
 
 # Panel geometry. The character occupies the lower portion; the speech bubble
 # grows upward into the space above it.
-_W, _H = 260, 300
-_CHAR_W, _CHAR_H = 96, 132          # character's drawing box
+_W, _H = 190, 210
+_CHAR_W, _CHAR_H = 60, 84           # character's drawing box
+
+# "Mini" mode: just the character, half size, no speech bubble — for when the
+# full buddy is more presence than you want on a small screen.
+_MINI_SCALE = 0.55
+_MINI_W, _MINI_H = 74, 82
 _FPS = 30.0
 
 STATES = ("idle", "listening", "thinking", "talking", "sleeping")
@@ -51,7 +59,7 @@ STATES = ("idle", "listening", "thinking", "talking", "sleeping")
 # size and stay legible on any wallpaper.
 _WIRE = (0.62, 0.65, 0.70)
 _WIRE_DARK = (0.42, 0.45, 0.51)
-_INK = (0.11, 0.12, 0.14)
+_INK = (0.20, 0.21, 0.25)          # softer than black; pure black reads cold
 _BUBBLE = (1.0, 1.0, 1.0, 0.97)
 _BUBBLE_EDGE = (0.0, 0.0, 0.0, 0.10)
 _ACCENT = (0.24, 0.52, 0.96)        # the listening ring
@@ -89,6 +97,9 @@ class BuddyView(NSView):
         self._mouth = 0.0             # 0 shut .. 1 open
         self._text = ""
         self._text_until = 0.0
+        self._bubble_rect = NSMakeRect(0, 0, 0, 0)
+        self._mini = False
+        self._scale = 1.0
         self._drag_origin = None
         self._on_click = None
         return self
@@ -107,6 +118,17 @@ class BuddyView(NSView):
 
     def state(self):
         return self._state
+
+    def setMini_(self, flag):
+        """Shrink to just the character (no bubble), or restore full size."""
+        self._mini = bool(flag)
+        self._scale = _MINI_SCALE if self._mini else 1.0
+        if self._mini:
+            self._text = ""
+        self.setNeedsDisplay_(True)
+
+    def isMini(self):
+        return self._mini
 
     def setText_(self, text):
         self._text = (text or "").strip()
@@ -175,21 +197,34 @@ class BuddyView(NSView):
         _color((0, 0, 0), 0.0).set()
         NSBezierPath.fillRect_(rect)
 
+        bounds = self.bounds()
+        scale = self._scale
+        char_w, char_h = _CHAR_W * scale, _CHAR_H * scale
+
         dx, dy, lean, squash = self._pose()
-        cx = _W / 2.0 + dx
-        base_y = 18.0 + dy
+        cx = bounds.size.width / 2.0 + dx * scale
+        base_y = 14.0 * scale + dy * scale
+
+        # A soft halo sits behind everything so the character separates from
+        # whatever is on screen. Detecting the actual backdrop would mean
+        # screen-capturing behind the window every frame — a permission prompt
+        # and real cost — whereas a light glow is free and does the job: it
+        # disappears against light wallpaper and lifts the character off dark
+        # ones, keeping the dark eyes and mouth readable either way.
+        self._draw_halo(cx, base_y + char_h * 0.5, char_h)
 
         if self._state == "listening":
-            self._draw_listening_ring(cx, base_y + _CHAR_H * 0.45)
-        self._draw_clip(cx, base_y, lean, squash)
+            self._draw_listening_ring(cx, base_y + char_h * 0.45, scale)
+        self._draw_clip(cx, base_y, lean, squash, char_w, char_h)
         if self._state == "thinking":
-            self._draw_thought_dots(cx + 16, base_y + _CHAR_H + 4)
-        if self._text:
-            self._draw_bubble(self._text, base_y + _CHAR_H + 14)
+            self._draw_thought_dots(cx + 16 * scale, base_y + char_h + 4, scale)
+        # Mini mode is deliberately silent: the bubble is the bulky part.
+        if self._text and not self._mini:
+            self._draw_bubble(self._text, base_y + char_h + 14)
 
     # -- the character --------------------------------------------------------
     @objc.python_method
-    def _draw_clip(self, cx, base_y, lean, squash):
+    def _draw_clip(self, cx, base_y, lean, squash, char_w, char_h):
         """A paperclip: one continuous wire folded into three legs.
 
         Proportions matter more than cleverness here — a clip only reads as a
@@ -197,8 +232,9 @@ class BuddyView(NSView):
         the inner fold sits off-centre. Drawn as a polyline (with the bends
         sampled as short segments) so the whole body can be sheared by `lean`.
         """
-        h = _CHAR_H * squash
-        a = _CHAR_W * 0.24            # outer half-width — narrow reads as wire
+        h = char_h * squash
+        scale = char_h / _CHAR_H
+        a = char_w * 0.24             # outer half-width — narrow reads as wire
         b = a * 0.38                  # inner leg, offset left of centre
         bot = base_y
         top = bot + h
@@ -209,7 +245,7 @@ class BuddyView(NSView):
 
         def add(x, y):
             frac = max(0.0, min(1.0, (y - bot) / max(1.0, h)))
-            pts.append(NSMakePoint(cx + x + lean * frac * 30.0, y))
+            pts.append(NSMakePoint(cx + x + lean * frac * 30.0 * scale, y))
 
         def fold(cx_local, cy_local, radius, a0, a1, steps=20):
             for i in range(steps + 1):
@@ -239,26 +275,27 @@ class BuddyView(NSView):
         # Contact shadow on the desktop.
         _color(_INK, 0.12).set()
         NSBezierPath.bezierPathWithOvalInRect_(
-            NSMakeRect(cx - a - 8, bot - 8, (a + 8) * 2, 11)).fill()
+            NSMakeRect(cx - a - 8 * scale, bot - 8 * scale,
+                       (a + 8 * scale) * 2, 11 * scale)).fill()
 
         # Dark under-stroke gives the wire a rounded, metallic edge.
-        wire.setLineWidth_(7.0)
+        wire.setLineWidth_(7.2 * scale)
         _color(_WIRE_DARK).set()
         wire.stroke()
-        wire.setLineWidth_(4.2)
+        wire.setLineWidth_(4.2 * scale)
         _color(_WIRE).set()
         wire.stroke()
 
-        self._draw_face(cx, bot, h, lean)
+        self._draw_face(cx, bot, h, lean, scale)
 
     @objc.python_method
-    def _draw_face(self, cx, bot, h, lean):
+    def _draw_face(self, cx, bot, h, lean, scale=1.0):
         """Eyes and mouth, riding near the top of the wire."""
-        eye_y = bot + h * 0.815
+        eye_y = bot + h * 0.80
         frac = (eye_y - bot) / max(1.0, h)
-        ex = cx + lean * frac * 34.0
-        gap = 9.0
-        r = 6.4
+        ex = cx + lean * frac * 34.0 * scale
+        gap = 7.6 * scale
+        r = 5.6 * scale
 
         for side in (-1, 1):
             x = ex + side * gap
@@ -269,94 +306,139 @@ class BuddyView(NSView):
             _color(_INK, 0.18).set()
             ring = NSBezierPath.bezierPathWithOvalInRect_(
                 NSMakeRect(x - r, eye_y - r, r * 2, r * 2))
-            ring.setLineWidth_(1.2)
+            ring.setLineWidth_(1.2 * scale)
             ring.stroke()
 
             # Pupil, offset slightly toward the lean so it looks where it leans.
-            pr = 3.1
-            px = x + lean * 10.0
-            py = eye_y - 0.5
+            # A large pupil filling most of the eye is the whole difference
+            # between "friendly" and "staring". Small pupils read as alarm.
+            pr = r * 0.74
+            px = x + lean * 10.0 * scale
+            py = eye_y - 0.5 * scale
             _color(_INK).set()
             NSBezierPath.bezierPathWithOvalInRect_(
                 NSMakeRect(px - pr, py - pr, pr * 2, pr * 2)).fill()
             # Catch-light
-            _color((1, 1, 1), 0.9).set()
+            _color((1, 1, 1), 0.95).set()
             NSBezierPath.bezierPathWithOvalInRect_(
-                NSMakeRect(px - pr + 1.0, py + 0.4, 2.0, 2.0)).fill()
+                NSMakeRect(px - pr * 0.45, py + pr * 0.15, pr * 0.7, pr * 0.7)).fill()
 
             # Eyelid closes over the top for a blink.
             if self._blink > 0.01:
                 _color(_WIRE).set()
-                lid = NSMakeRect(x - r - 1, eye_y + r - (2 * r + 2) * self._blink,
-                                 r * 2 + 2, (2 * r + 2) * self._blink)
+                lid = NSMakeRect(x - r - scale, eye_y + r - (2 * r + 2 * scale) * self._blink,
+                                 r * 2 + 2 * scale, (2 * r + 2 * scale) * self._blink)
                 NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
                     lid, r, r * 0.6).fill()
 
-        # Mouth: a line at rest, an oval while speaking.
-        my = eye_y - 12.5
+        # Cheeks: a hint of warmth. Tiny, but it stops the face reading as cold.
+        for side in (-1, 1):
+            _color((0.94, 0.60, 0.58), 0.30).set()
+            NSBezierPath.bezierPathWithOvalInRect_(
+                NSMakeRect(ex + side * (gap + r * 0.8) - 3.0 * scale,
+                           eye_y - r - 3.0 * scale, 6.0 * scale, 4.0 * scale)).fill()
+
+        # Mouth: a curve at rest, an oval while speaking.
+        my = eye_y - 10.0 * scale
         if self._mouth > 0.05:
-            mh = 3.0 + self._mouth * 9.0
-            mw = 12.0 + self._mouth * 3.0
+            mh = (2.4 + self._mouth * 6.5) * scale
+            mw = (8.0 + self._mouth * 2.5) * scale
             _color(_INK).set()
             NSBezierPath.bezierPathWithOvalInRect_(
                 NSMakeRect(ex - mw / 2, my - mh / 2, mw, mh)).fill()
         else:
             path = NSBezierPath.bezierPath()
-            path.setLineWidth_(2.4)
+            path.setLineWidth_(2.4 * scale)
             path.setLineCapStyle_(1)
-            smile = 2.5 if self._state in ("idle", "listening") else 0.0
-            path.moveToPoint_(NSMakePoint(ex - 6, my))
+            # A real upward curve, not a flat line — the flat mouth was most of
+            # why it looked unsettling.
+            smile = (3.4 if self._state in ("idle", "listening", "talking") else 1.2) * scale
+            path.moveToPoint_(NSMakePoint(ex - 5.5 * scale, my + smile * 0.45))
             path.curveToPoint_controlPoint1_controlPoint2_(
-                NSMakePoint(ex + 6, my),
-                NSMakePoint(ex - 2, my - smile),
-                NSMakePoint(ex + 2, my - smile))
-            _color(_INK, 0.75).set()
+                NSMakePoint(ex + 5.5 * scale, my + smile * 0.45),
+                NSMakePoint(ex - 2.0 * scale, my - smile),
+                NSMakePoint(ex + 2.0 * scale, my - smile))
+            _color(_INK, 0.8).set()
             path.stroke()
 
     @objc.python_method
-    def _draw_listening_ring(self, cx, cy):
+    def _draw_halo(self, cx, cy, char_h=_CHAR_H):
+        """Radial glow behind the character, brightest at its centre."""
+        r = char_h * 1.02
+        # Breathes very slightly so it reads as alive rather than as a sticker.
+        r *= 1.0 + math.sin(self._t * 0.9) * 0.02
+        # Weighted toward transparent so the glow fades out well before the
+        # oval's edge — an evenly-spaced ramp leaves a visible disc.
+        grad = NSGradient.alloc().initWithColors_atLocations_colorSpace_(
+            [_color((1.0, 1.0, 1.0), 0.34),
+             _color((1.0, 1.0, 1.0), 0.13),
+             _color((1.0, 1.0, 1.0), 0.03),
+             _color((1.0, 1.0, 1.0), 0.0)],
+            [0.0, 0.32, 0.66, 1.0],
+            NSColorSpace.genericRGBColorSpace())
+        oval = NSBezierPath.bezierPathWithOvalInRect_(
+            NSMakeRect(cx - r, cy - r, r * 2, r * 2))
+        grad.drawInBezierPath_relativeCenterPosition_(oval, NSMakePoint(0.0, 0.0))
+
+    @objc.python_method
+    def _draw_listening_ring(self, cx, cy, scale=1.0):
         """A pulse that expands and fades — the visual 'I'm hearing you'."""
         for i in range(3):
             phase = (self._t * 1.1 + i / 3.0) % 1.0
-            radius = 42 + phase * 34
+            radius = (42 + phase * 34) * scale
             alpha = (1.0 - phase) * 0.30
             _color(_ACCENT, alpha).set()
             ring = NSBezierPath.bezierPathWithOvalInRect_(
                 NSMakeRect(cx - radius, cy - radius, radius * 2, radius * 2))
-            ring.setLineWidth_(2.0)
+            ring.setLineWidth_(2.0 * scale)
             ring.stroke()
 
     @objc.python_method
-    def _draw_thought_dots(self, x, y):
+    def _draw_thought_dots(self, x, y, scale=1.0):
         for i in range(3):
-            bounce = abs(math.sin(self._t * 3.2 - i * 0.6)) * 5.0
-            r = 3.0 + i * 0.8
+            bounce = abs(math.sin(self._t * 3.2 - i * 0.6)) * 5.0 * scale
+            r = (3.0 + i * 0.8) * scale
             _color(_INK, 0.30 + i * 0.14).set()
             NSBezierPath.bezierPathWithOvalInRect_(
-                NSMakeRect(x + i * 12, y + bounce, r * 2, r * 2)).fill()
+                NSMakeRect(x + i * 12 * scale, y + bounce, r * 2, r * 2)).fill()
 
     @objc.python_method
     def _draw_bubble(self, text, y):
-        """A rounded speech bubble above the character, sized to the text."""
-        font = NSFont.systemFontOfSize_(12.5)
+        """A rounded speech bubble above the character, sized to fit its text.
+
+        The height is measured rather than estimated — guessing the line count
+        from the single-line width was what let long answers spill out of the
+        bubble and off the panel. Anything still too tall for the panel is
+        truncated, because a bubble that runs off screen shows nothing useful.
+        """
+        font = NSFont.systemFontOfSize_(11.5)
+        para = NSMutableParagraphStyle.alloc().init()
+        para.setLineBreakMode_(NSLineBreakByWordWrapping)
         attrs = {NSFontAttributeName: font,
-                 NSForegroundColorAttributeName: _color(_INK)}
-        max_w = _W - 36
-        ns = NSString.stringWithString_(text)
-        size = ns.sizeWithAttributes_(attrs)
-        # Wrap by estimating lines; NSString drawing handles the actual layout.
-        lines = max(1, int(size.width / max_w) + 1)
-        box_w = min(max_w, size.width + 20)
-        box_h = size.height * lines + 16
+                 NSForegroundColorAttributeName: _color(_INK),
+                 NSParagraphStyleAttributeName: para}
+
+        pad_x, pad_y = 10.0, 7.0
+        max_w = _W - 24
+        text_w = max_w - pad_x * 2
+        # Room between the character's head and the top of the panel.
+        max_box_h = max(30.0, _H - y - 6)
+        max_text_h = max_box_h - pad_y * 2
+
+        ns, size = self._fit_text(text, attrs, text_w, max_text_h)
+        box_w = min(max_w, max(70.0, size.width + pad_x * 2))
+        box_h = size.height + pad_y * 2
         bx = (_W - box_w) / 2.0
-        by = min(y, _H - box_h - 6)
+        by = min(y, _H - box_h - 4)
 
         rect = NSMakeRect(bx, by, box_w, box_h)
-        bubble = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
-            rect, 12, 12)
+        self._bubble_rect = rect
+
         _color(_INK, 0.10).set()
         NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
-            NSMakeRect(bx, by - 1.5, box_w, box_h), 12, 12).fill()
+            NSMakeRect(bx, by - 1.5, box_w, box_h), 11, 11).fill()
+        bubble = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+            rect, 11, 11)
         _color(_BUBBLE).set()
         bubble.fill()
         _color(_BUBBLE_EDGE).set()
@@ -365,16 +447,67 @@ class BuddyView(NSView):
 
         # Tail pointing down at the character.
         tail = NSBezierPath.bezierPath()
-        tail.moveToPoint_(NSMakePoint(_W / 2 - 7, by + 1))
-        tail.lineToPoint_(NSMakePoint(_W / 2 + 1, by - 8))
-        tail.lineToPoint_(NSMakePoint(_W / 2 + 8, by + 1))
+        tail.moveToPoint_(NSMakePoint(_W / 2 - 6, by + 1))
+        tail.lineToPoint_(NSMakePoint(_W / 2, by - 7))
+        tail.lineToPoint_(NSMakePoint(_W / 2 + 6, by + 1))
         _color(_BUBBLE).set()
         tail.fill()
 
-        ns.drawInRect_withAttributes_(
-            NSMakeRect(bx + 10, by + 8, box_w - 20, box_h - 16), attrs)
+        ns.drawWithRect_options_attributes_(
+            NSMakeRect(bx + pad_x, by + pad_y, text_w, size.height),
+            NSStringDrawingUsesLineFragmentOrigin, attrs)
+
+    @objc.python_method
+    def _fit_text(self, text, attrs, width, max_height):
+        """Return (attributed-ready string, size) trimmed to fit `max_height`."""
+        def measure(candidate):
+            ns = NSString.stringWithString_(candidate)
+            rect = ns.boundingRectWithSize_options_attributes_(
+                NSMakeSize(width, 10000.0),
+                NSStringDrawingUsesLineFragmentOrigin, attrs)
+            return ns, rect.size
+
+        ns, size = measure(text)
+        if size.height <= max_height:
+            return ns, size
+        # Too tall: binary-search the longest prefix that fits, then ellipsize.
+        lo, hi = 0, len(text)
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            _, trial = measure(text[:mid].rstrip() + "…")
+            if trial.height <= max_height:
+                lo = mid
+            else:
+                hi = mid - 1
+        return measure(text[:lo].rstrip() + "…")
 
     # -- interaction ----------------------------------------------------------
+    @objc.python_method
+    def _char_rect(self):
+        """Screen-ish rect the character actually occupies, plus a small margin.
+
+        The panel is much larger than the character (it has to leave room for
+        the speech bubble), so without this the whole empty area swallows
+        clicks meant for the windows behind it.
+        """
+        scale = self._scale
+        a = _CHAR_W * scale * 0.24
+        pad = 8.0 * scale
+        bounds = self.bounds()
+        base_y = 14.0 * scale
+        return NSMakeRect(bounds.size.width / 2.0 - a - pad, base_y - pad,
+                          (a + pad) * 2, _CHAR_H * scale + pad * 2)
+
+    def hitTest_(self, point):
+        # `point` arrives in the superview's coordinates.
+        sup = self.superview()
+        local = self.convertPoint_fromView_(point, sup) if sup else point
+        if NSPointInRect(local, self._char_rect()):
+            return self
+        if self._text and NSPointInRect(local, self._bubble_rect):
+            return self
+        return None                      # click falls through to what's behind
+
     def mouseDown_(self, event):
         self._drag_origin = event.locationInWindow()
         self._down_at = time.time()
@@ -457,6 +590,27 @@ class Buddy:
             self.view.setText_(text)
             self.view.setState_("talking")
         _on_main(_do)
+
+    def set_mini(self, mini: bool):
+        """Switch between the full buddy and the compact character-only one.
+
+        The panel shrinks with it, staying pinned to its bottom-right corner so
+        the character does not appear to jump across the screen.
+        """
+        def _do():
+            frame = self.panel.frame()
+            w, h = (_MINI_W, _MINI_H) if mini else (_W, _H)
+            right = frame.origin.x + frame.size.width
+            self.panel.setFrame_display_(
+                NSMakeRect(right - w, frame.origin.y, w, h), True)
+            self.view.setMini_(mini)
+        _on_main(_do)
+
+    def is_mini(self) -> bool:
+        return bool(self.view.isMini())
+
+    def toggle_mini(self):
+        self.set_mini(not self.is_mini())
 
     def show_threadsafe(self):
         _on_main(self.show)

@@ -69,12 +69,36 @@ def _guard(callback):
     return _wrapped
 
 
+def start_hotkeys(mapping: dict) -> "keyboard.GlobalHotKeys":
+    """Start one listener handling several hotkeys: ``{hotkey_str: callback}``.
+
+    Use this rather than calling :func:`start_hotkey` twice. Each listener
+    installs its own event tap, and a second tap in the same process is killed
+    by macOS (SIGABRT, no traceback) — the app simply vanishes at startup. One
+    listener with several bindings is both supported and cheaper.
+    """
+    bindings = {}
+    for raw, callback in mapping.items():
+        if not raw or not callable(callback):
+            continue
+        bindings[_normalize(raw)] = _guard(callback)
+    if not bindings:
+        raise ValueError("no valid hotkeys given")
+    listener = keyboard.GlobalHotKeys(bindings)
+    listener.start()
+    _log.debug("hotkey listener started for %s", ", ".join(bindings))
+    return listener
+
+
 def start_hotkey(hotkey_str: str, callback) -> "keyboard.GlobalHotKeys":
     """Start listening for ``hotkey_str`` and call ``callback`` on each press.
 
     Returns a running ``GlobalHotKeys`` listener (a daemon thread). Stop it with
     :func:`stop_hotkey`. The callback runs on the listener thread; its exceptions
     are swallowed and logged so a single failure never tears down the listener.
+
+    For more than one hotkey use :func:`start_hotkeys` — a second listener in
+    the same process is fatal.
     """
     normalized = _normalize(hotkey_str)
     if normalized != hotkey_str:

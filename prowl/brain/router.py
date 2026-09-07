@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import re
 from typing import Any
 
 from .. import skills as skills_pkg
@@ -98,7 +99,7 @@ class Router:
             )
 
         decision = self._parse(raw)
-        return self._validate(decision)
+        return self._validate(decision, utterance)
 
     # -- helpers --------------------------------------------------------------
     def _parse(self, raw: str) -> Decision:
@@ -123,7 +124,22 @@ class Router:
             raw=raw,
         )
 
-    def _validate(self, d: Decision) -> Decision:
+    # media_control only drives Music/Spotify. "play a video" is a different
+    # job entirely, and a small model reaches for the nearest-looking skill.
+    _VIDEO = re.compile(r"\b(video|movie|film|episode|show|youtube|netflix|"
+                        r"trailer|clip)\b", re.I)
+
+    # Verbs that operate on files that already exist. "rename all my screenshots
+    # by date" is a job for the agent; a small model sees the word "screenshot"
+    # and offers to take one, which is both wrong and surprising.
+    _MANAGES_FILES = re.compile(
+        r"\b(rename|sort|organi[sz]e|move|delete|remove|tidy|group|archive|"
+        r"upload|share|convert|compress|resize|batch|back ?up|clean out)\b", re.I)
+    # Skills that act immediately and would be the wrong answer to such a task.
+    _ACTS_NOW = ("screenshot", "open_file", "reveal_in_finder", "open_app",
+                 "open_url", "open_site", "web_search", "media_control")
+
+    def _validate(self, d: Decision, utterance: str = "") -> Decision:
         if d.action not in ("chat", "skill", "escalate"):
             d.action = "chat"
         if not isinstance(d.args, dict):
@@ -139,6 +155,10 @@ class Router:
             # query=""). Running that asks the user a nonsense question, so
             # treat a skill with no usable argument as a bad guess.
             if _required_args(skill) and not _has_usable_arg(skill, d.args):
+                return self._reject(d)
+            if d.skill == "media_control" and self._VIDEO.search(utterance):
+                return self._reject(d)
+            if d.skill in self._ACTS_NOW and self._MANAGES_FILES.search(utterance):
                 return self._reject(d)
         return d
 
