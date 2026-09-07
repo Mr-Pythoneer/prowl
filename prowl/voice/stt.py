@@ -10,6 +10,8 @@ Public API:
     helper_path() -> Path       location of the ``prowl-listen`` binary
     is_available() -> bool      True if that binary exists and is executable
     listen_once(cfg) -> str     capture one utterance ("" on failure/timeout)
+    listen_once_ex(cfg)         same, as ``(text, problem)`` so a caller can say
+                                *why* nothing was heard
 """
 from __future__ import annotations
 
@@ -46,9 +48,18 @@ def _coerce_seconds(value) -> int:
 
 
 def helper_path() -> Path:
-    """Path to the compiled Swift helper binary (may not exist yet)."""
-    # prowl/voice/stt.py -> parent is prowl/voice, parent.parent is prowl/.
-    return Path(__file__).resolve().parent.parent / "helpers" / "prowl-listen"
+    """Path to the compiled Swift helper binary (may not exist yet).
+
+    The helper ships inside a minimal ``ProwlListen.app`` bundle: macOS only
+    reads microphone/speech usage descriptions from a *bundle's* Info.plist, and
+    a bare binary is killed on first mic access (see scripts/build_stt.sh). The
+    pre-bundle path is still accepted so an old build keeps working.
+    """
+    helpers = Path(__file__).resolve().parent.parent / "helpers"
+    bundled = helpers / "ProwlListen.app" / "Contents" / "MacOS" / "prowl-listen"
+    if bundled.is_file():
+        return bundled
+    return helpers / "prowl-listen"
 
 
 def is_available() -> bool:
@@ -57,13 +68,37 @@ def is_available() -> bool:
     return path.is_file() and os.access(path, os.X_OK)
 
 
+# The helper's exit codes, mapped to something worth saying out loud. A denied
+# microphone is indistinguishable from silence unless we report it.
+_EXIT_REASONS = {
+    2: ("Speech Recognition permission is off. Turn it on in System Settings → "
+        "Privacy & Security → Speech Recognition."),
+    3: ("Microphone permission is off. Turn it on in System Settings → "
+        "Privacy & Security → Microphone."),
+    4: "The speech recognizer isn't available for that language right now.",
+    6: "I couldn't read the microphone — check the input device in Sound settings.",
+}
+
+
 def listen_once(cfg) -> str:
     """Capture one spoken utterance and return the recognized transcript.
 
+    Returns "" on any failure. Use :func:`listen_once_ex` when you want to tell
+    the user *why* nothing came back. Never raises.
+    """
+    return listen_once_ex(cfg)[0]
+
+
+def listen_once_ex(cfg) -> tuple[str, str]:
+    """Capture one utterance as ``(transcript, problem)``.
+
+    Exactly one of the two is meaningful: a transcript on success, or a short
+    human-readable ``problem`` explaining the failure (permissions, missing
+    helper, timeout). Both empty means the mic worked but heard nothing.
+
     Runs the helper as ``[prowl-listen, <max_seconds>, <locale>]``. The helper
     prints the final transcript to stdout (status/errors go to stderr) and exits
-    0 on success. Returns "" on any failure: missing binary, timeout, non-zero
-    exit, or empty result. Never raises.
+    0 on success. Never raises.
     """
     path = helper_path()
     max_seconds = _coerce_seconds(cfg.get("stt_max_seconds", _DEFAULT_SECONDS))
@@ -79,13 +114,19 @@ def listen_once(cfg) -> str:
         )
     except FileNotFoundError:
         print(_BUILD_HINT, file=sys.stderr)
-        return ""
+        return "", _BUILD_HINT
     except subprocess.TimeoutExpired:
-        return ""
-    except OSError:
+        return "", "The microphone didn't respond in time."
+    except OSError as exc:
         # e.g. binary present but not executable / arch mismatch.
-        return ""
+        return "", f"Couldn't run the speech helper ({exc})."
 
     if proc.returncode != 0:
-        return ""
-    return (proc.stdout or "").strip()
+        reason = _EXIT_REASONS.get(proc.returncode)
+        if reason is None:
+            stderr = (proc.stderr or "").strip().splitlines()
+            reason = stderr[-1] if stderr else (
+                f"The speech helper exited with code {proc.returncode}."
+            )
+        return "", reason
+    return (proc.stdout or "").strip(), ""

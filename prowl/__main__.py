@@ -90,14 +90,16 @@ def cmd_oneshot(utterance: str, *, speak_aloud: bool, assume_yes: bool) -> int:
 
 def cmd_listen(assume_yes: bool) -> int:
     from .executor import Orchestrator
-    from .voice.stt import listen_once
+    from .voice.stt import listen_once_ex
 
     cfg = Config.load()
     ctx = _make_context(cfg, aloud=cfg.voice_enabled, assume_yes=assume_yes, dry_run=False)
     print("🎙  Listening… (speak now)")
-    text = listen_once(cfg)
+    text, problem = listen_once_ex(cfg)
     if not text:
-        print("Didn't catch anything.")
+        # Say why, when we know — a denied microphone otherwise looks exactly
+        # like silence, which is impossible to debug from the outside.
+        print(problem or "Didn't catch anything — I heard only silence.")
         return 1
     print(f"Heard: {text}")
     orch = Orchestrator(cfg)
@@ -260,14 +262,20 @@ def cmd_doctor() -> int:
     print("✅ `say` (TTS) available" if which("say") else "❌ `say` missing")
 
     from pathlib import Path
-    helper = Path(__file__).parent / "helpers" / "prowl-listen"
+    from .voice.stt import helper_path
+    helper = helper_path()
     if not helper.exists():
         print("•  Voice STT helper not built yet — run scripts/build_stt.sh")
     elif not os.access(helper, os.X_OK):
         ok = False
         print(f"❌ Voice STT helper is not executable — chmod +x {helper}")
     else:
-        print("✅ Voice STT helper built and executable")
+        bundled = ".app bundle" if "ProwlListen.app" in str(helper) else "BARE BINARY"
+        print(f"✅ Voice STT helper built and executable ({bundled})")
+        if bundled != ".app bundle":
+            ok = False
+            print("❌ helper is not in ProwlListen.app — macOS will kill it on "
+                  "first mic use. Rebuild with scripts/build_stt.sh")
         # Speech Recognition / Microphone are TCC-gated; a denial shows up as an
         # instant empty transcript, which is indistinguishable from silence.
         print("•  If voice returns nothing, check System Settings → Privacy & "

@@ -71,7 +71,9 @@ DEFAULTS: dict[str, Any] = {
     "stt_max_seconds": 12,            # cap on a single dictation
 
     # ---- interaction --------------------------------------------------------
-    "hotkey": "<cmd>+<shift>+<space>",  # pynput global hotkey to start listening
+    "hotkey": "<f5>",                # pynput global hotkey to start listening
+                                 # (F5 is the mic key on Apple keyboards;
+                                 #  bare key names are wrapped automatically)
     "wake_word": "prowl",             # spoken wake word (when always-listening)
     "always_listening": False,        # off by default (privacy); hotkey-driven
 

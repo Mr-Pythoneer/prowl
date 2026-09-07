@@ -125,13 +125,15 @@ class ProwlApp(rumps.App):
     def _talk(self) -> None:
         """Capture one utterance and act on it (background thread only)."""
         try:
-            text = stt.listen_once(self.cfg)
+            text, problem = stt.listen_once_ex(self.cfg)
         except Exception:  # noqa: BLE001 - STT failure is non-fatal
             self.log.exception("listen_once failed")
             hud.notify(_TITLE, "Couldn't start listening.")
             return
         if not text:
-            hud.notify(_TITLE, "Didn't catch anything.")
+            # Report the actual reason (denied mic, missing helper) rather
+            # than a blanket "didn't catch anything" the user can't act on.
+            hud.notify(_TITLE, problem or "Didn't catch anything — only silence.")
             return
         hud.notify(_TITLE, f"Heard: {text}")
         self._handle(text)
