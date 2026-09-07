@@ -8,6 +8,7 @@ instead of raising.
 """
 from __future__ import annotations
 
+import difflib
 import subprocess
 from urllib.parse import quote_plus, urlsplit
 
@@ -186,6 +187,11 @@ class OpenSite(Skill):
             return SkillResult.fail("Which site should I open?")
         key = name.strip().lower()
         url = SITES.get(key)
+        if url is None:
+            # Tolerate a near-miss ("youtub", "githbu") before giving up.
+            close = difflib.get_close_matches(key, list(SITES), n=1, cutoff=0.82)
+            if close:
+                url = SITES[close[0]]
         if url is None:
             # Unknown shorthand: treat it as a domain if it looks like one.
             if _looks_like_url(name):

@@ -11,6 +11,7 @@ all understand the same names.
 """
 from __future__ import annotations
 
+import difflib
 import re
 from functools import lru_cache
 from pathlib import Path
@@ -48,7 +49,7 @@ def refresh() -> None:
     installed_apps.cache_clear()
 
 
-def resolve(name: str) -> str | None:
+def resolve(name: str, *, fuzzy: bool = True) -> str | None:
     """Return the installed app matching *name*, or None.
 
     Tried in order, most confident first:
@@ -84,17 +85,37 @@ def resolve(name: str) -> str | None:
         return hits[0]
 
     # "vs code" -> "Visual Studio Code" via initials.
-    squashed = key
     hits = []
     for app in apps:
         words = re.findall(r"[A-Za-z0-9]+", app)
-        if len(words) > 1 and "".join(w[0] for w in words).lower() == squashed:
+        if len(words) > 1 and "".join(w[0] for w in words).lower() == key:
             hits.append(app)
     if len(hits) == 1:
         return hits[0]
+
+    if not fuzzy:
+        return None
+
+    # Last resort: a near-miss. Typing "safri" or "discrod", or the recogniser
+    # hearing "spotifi", should still land. The cutoff is deliberately high —
+    # opening the wrong application is worse than admitting we didn't catch it.
+    #
+    # Only for callers that have already decided they want an app. Deciding
+    # *whether* a name is an app must stay strict: "gmail" is one edit from
+    # "mail", and "open gmail" means the website.
+    close = difflib.get_close_matches(key, [_normalize(a) for a in apps],
+                                      n=1, cutoff=0.84)
+    if close:
+        for app in apps:
+            if _normalize(app) == close[0]:
+                return app
     return None
 
 
 def is_installed(name: str) -> bool:
-    """True if *name* names an installed app."""
-    return resolve(name) is not None
+    """True if *name* is definitely an installed app.
+
+    Strict on purpose: this decides app-versus-website, where a near-miss picks
+    the wrong one entirely ("gmail" is one edit away from "Mail").
+    """
+    return resolve(name, fuzzy=False) is not None

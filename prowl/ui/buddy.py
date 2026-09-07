@@ -148,7 +148,6 @@ class BuddyView(NSView):
         self._bubble_rect = NSMakeRect(0, 0, 0, 0)
         self._mini = False
         self._scale = 1.0
-        self._halo_cache = {}
         self._interval = 1.0 / 10.0     # replaced by _retime() on show()
         self._was_blinking = False
         self._power_elapsed = 0.0
@@ -241,8 +240,7 @@ class BuddyView(NSView):
 
         if self._text and time.time() > self._text_until:
             self._text = ""
-            self._halo_cache = {}
-        self._interval = 1.0 / 10.0     # replaced by _retime() on show()
+            self._interval = 1.0 / 10.0     # replaced by _retime() on show()
         self._was_blinking = False
         self._power_elapsed = 0.0
         self._owner = None              # set by Buddy, so state can re-time
@@ -316,13 +314,9 @@ class BuddyView(NSView):
         cx = bounds.size.width / 2.0 + dx * scale
         base_y = 14.0 * scale + dy * scale
 
-        # A soft halo sits behind everything so the character separates from
-        # whatever is on screen. Detecting the actual backdrop would mean
-        # screen-capturing behind the window every frame — a permission prompt
-        # and real cost — whereas a light glow is free and does the job: it
-        # disappears against light wallpaper and lifts the character off dark
-        # ones, keeping the dark eyes and mouth readable either way.
-        self._draw_halo(cx, base_y + char_h * 0.5, char_h)
+        # Nothing is drawn behind the character. He carries his own contrast
+        # (dark under-stroke, light core), which works on any wallpaper without
+        # a backdrop — see _draw_clip.
 
         if self._state == "listening":
             self._draw_listening_ring(cx, base_y + char_h * 0.45, scale)
@@ -389,7 +383,11 @@ class BuddyView(NSView):
             NSMakeRect(cx - a - 8 * scale, bot - 8 * scale,
                        (a + 8 * scale) * 2, 11 * scale)).fill()
 
-        # Dark under-stroke gives the wire a rounded, metallic edge.
+        # Dark under-stroke, light core. That pairing is what makes him legible
+        # on any wallpaper — the light core reads against a dark desktop, the
+        # dark edge against a bright one. A glow behind him used to do this job
+        # and was removed: a soft ellipse cannot fit a panel this shape without
+        # either being clipped by an edge or reading as a grey oval.
         wire.setLineWidth_(7.2 * scale)
         _color(_WIRE_DARK).set()
         wire.stroke()
@@ -471,56 +469,6 @@ class BuddyView(NSView):
                 NSMakePoint(ex + 2.0 * scale, my - smile))
             _color(_INK, 0.8).set()
             path.stroke()
-
-    @objc.python_method
-    def _draw_halo(self, cx, cy, char_h=_CHAR_H):
-        """Soft glow behind the character, so he reads on any wallpaper.
-
-        Fitted to the window rather than sized purely from the character: a
-        circle wider than the panel gets clipped by its edge, and because the
-        gradient is still part-way through fading at that point the clip shows
-        up as a hard straight line across the glow.
-
-        Elliptical, so it can fill a panel that isn't square, and rendered once
-        into an image — rebuilding the gradient per frame was the single most
-        expensive thing on screen.
-        """
-        bounds = self.bounds()
-        # Reach the edge exactly, where the gradient has already reached zero
-        # alpha, so there is nothing left to cut off.
-        rx = min(char_h * 1.02, cx, bounds.size.width - cx)
-        ry = min(char_h * 1.02, cy, bounds.size.height - cy)
-        if rx <= 1 or ry <= 1:
-            return
-
-        key = (round(rx, 1), round(ry, 1))
-        image = self._halo_cache.get(key)
-        if image is None:
-            image = self._render_halo(rx, ry)
-            self._halo_cache[key] = image
-        image.drawAtPoint_fromRect_operation_fraction_(
-            NSMakePoint(cx - rx, cy - ry), NSZeroRect,
-            NSCompositingOperationSourceOver, 1.0)
-
-    @objc.python_method
-    def _render_halo(self, rx, ry):
-        """Draw the glow once into its own image."""
-        image = NSImage.alloc().initWithSize_(NSMakeSize(rx * 2, ry * 2))
-        image.lockFocus()
-        # Weighted toward transparent so the glow is fully faded well before
-        # the edge — an evenly-spaced ramp leaves a visible disc.
-        grad = NSGradient.alloc().initWithColors_atLocations_colorSpace_(
-            [_color((1.0, 1.0, 1.0), 0.30),
-             _color((1.0, 1.0, 1.0), 0.11),
-             _color((1.0, 1.0, 1.0), 0.02),
-             _color((1.0, 1.0, 1.0), 0.0)],
-            [0.0, 0.30, 0.62, 1.0],
-            NSColorSpace.genericRGBColorSpace())
-        oval = NSBezierPath.bezierPathWithOvalInRect_(
-            NSMakeRect(0, 0, rx * 2, ry * 2))
-        grad.drawInBezierPath_relativeCenterPosition_(oval, NSMakePoint(0.0, 0.0))
-        image.unlockFocus()
-        return image
 
     @objc.python_method
     def _draw_listening_ring(self, cx, cy, scale=1.0):
