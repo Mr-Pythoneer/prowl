@@ -1,0 +1,6 @@
+#!/bin/bash
+export PYTHONPATH="/Users/skyler/prowl"
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+# Only one copy should hold the menu bar and the microphone.
+pkill -f "prowl(\.__main__)? serve" 2>/dev/null
+exec "/Users/skyler/prowl/.venv/bin/python" -m prowl serve

@@ -1,48 +1,54 @@
-"""Wake-word listening — "Hey Prowl" without touching the keyboard.
+"""Wake-word listening — "Hey Bob" without touching the keyboard.
 
-There is no always-on keyword spotter here. macOS already gives us a good
-on-device recognizer, so this simply runs short capture windows back to back
-and checks each transcript for the wake word. That is cheap enough to leave
-running, needs no model download, and reuses the exact speech path the hotkey
-uses.
+The speech helper runs in streaming mode: one resident recogniser that appends
+a line to a file for every phrase it hears. This listener tails that file.
+
+The earlier design captured fixed-length windows back to back, and it could not
+work: the recogniser is deaf between windows, and it only reports once a window
+closes — so a wake word was either missed outright or acted on many seconds
+after it was spoken. A single resident recogniser has neither problem.
 
 Two shapes of utterance are handled:
 
-    "Hey Prowl"                 -> wake, then listen again for the command
-    "Hey Prowl, open Safari"    -> wake and command in one breath
+    "Hey Bob, open Safari"      -> wake and command in one line
+    "Hey Bob"  then  "open Safari"
+                                -> bare wake arms him; the next line is the
+                                   command, until `_ARM_SECONDS` passes
 
 Public API::
 
     listener = WakeListener(cfg, on_wake=..., on_command=...)
-    listener.start()
-    listener.stop()
+    listener.start(); listener.stop()
+    listener.mute() / unmute()      # while Bob is speaking, so he doesn't
+                                    # answer his own voice
 """
 from __future__ import annotations
 
 import logging
+import os
 import re
+import subprocess
+import tempfile
 import threading
+import time
+from pathlib import Path
 
-from .stt import listen_once_ex, stop_helpers
+from .stt import app_path, stop_helpers
 
 _log = logging.getLogger("prowl")
 
-# How long each listening window runs while waiting for the wake word.
-#
-# Long, deliberately. The recognizer already returns as soon as you stop
-# talking, so a long window costs nothing while the room is quiet and still
-# reacts immediately when you speak. What it avoids is the ~0.8s relaunch gap
-# between windows: at 5s windows Prowl would be deaf ~13% of the time and miss
-# you calling it; at 45s that drops to under 2%. Kept below Apple's ~60s cap on
-# a single recognition request.
-_WINDOW_SECONDS = 45
+# How long a bare "Hey Bob" waits for the command that follows it.
+_ARM_SECONDS = 12.0
+
+# How often to check the transcript file for new lines.
+_POLL_SECONDS = 0.25
 
 # Filler that may precede the wake word.
 _PREFIX = r"(?:hey|hi|hello|ok|okay|yo)?\s*"
 
 
 class WakeListener:
-    """Runs capture windows on a background thread until the wake word appears."""
+    """Tails the streaming recogniser and fires on the wake word."""
 
     def __init__(self, cfg, on_wake=None, on_command=None, on_error=None):
         self.cfg = cfg
@@ -51,8 +57,9 @@ class WakeListener:
         self.on_error = on_error
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
-        # Consecutive failures, so a denied microphone doesn't spin forever.
-        self._failures = 0
+        self._muted = threading.Event()
+        self._armed_until = 0.0
+        self._path: Path | None = None
 
     # -- lifecycle ------------------------------------------------------------
     @property
@@ -63,7 +70,7 @@ class WakeListener:
         if self.running:
             return
         self._stop.clear()
-        self._failures = 0
+        self._muted.clear()
         self._thread = threading.Thread(target=self._loop, daemon=True,
                                         name="prowl-wake")
         self._thread.start()
@@ -72,10 +79,16 @@ class WakeListener:
     def stop(self) -> None:
         self._stop.set()
         self._thread = None
-        # The in-flight capture is a detached app; without this it keeps the
-        # microphone until its window ends.
         stop_helpers()
         _log.info("wake listener stopped")
+
+    # Bob's own speech comes back through the microphone; ignore the stream
+    # while he is talking rather than letting him answer himself.
+    def mute(self) -> None:
+        self._muted.set()
+
+    def unmute(self) -> None:
+        self._muted.clear()
 
     # -- config ---------------------------------------------------------------
     @property
@@ -85,66 +98,121 @@ class WakeListener:
 
     def _pattern(self) -> re.Pattern:
         word = re.escape(self.wake_word)
-        # Anchored to the start of the utterance, after optional filler. A short
-        # name like "Bob" turns up mid-sentence in ordinary conversation ("I
-        # told Bob about it"), and matching anywhere would wake on all of it.
-        # Addressing someone by name naturally comes first, so this costs
-        # nothing and removes the whole class of false wake.
+        # Anchored to the start of the phrase, after optional filler. A short
+        # name turns up mid-sentence in ordinary conversation ("I told Bob
+        # about it"); addressing someone by name naturally comes first, so
+        # anchoring removes that whole class of false wake for free.
         return re.compile(rf"^[\s,.]*{_PREFIX}{word}\b[\s,.!?-]*(.*)", re.I)
+
+    # -- the resident recogniser ---------------------------------------------
+    def _spawn(self) -> Path | None:
+        """Start the streaming helper and return the file it writes to."""
+        app = app_path()
+        if not app.is_dir():
+            if callable(self.on_error):
+                self.on_error("The speech helper isn't built "
+                              "(run scripts/build_stt.sh).")
+            return None
+        stop_helpers()
+        tmp = tempfile.NamedTemporaryFile(prefix="prowl-wake-", suffix=".txt",
+                                          delete=False)
+        tmp.close()
+        path = Path(tmp.name)
+        locale = str(self.cfg.get("stt_locale", "en-US") or "en-US")
+        try:
+            # Through LaunchServices, so the microphone permission belongs to
+            # ProwlListen.app rather than to whatever launched Prowl.
+            subprocess.run(
+                ["open", "-n", "-a", str(app), "--args",
+                 "--stream", "0", locale, str(path)],
+                capture_output=True, timeout=20, check=False,
+            )
+        except (FileNotFoundError, subprocess.SubprocessError, OSError) as exc:
+            if callable(self.on_error):
+                self.on_error(f"Couldn't start listening ({exc}).")
+            return None
+        return path
+
+    @staticmethod
+    def _helper_alive() -> bool:
+        try:
+            out = subprocess.run(["pgrep", "-f", "prowl-listen --stream"],
+                                 capture_output=True, text=True, timeout=5)
+            return bool(out.stdout.strip())
+        except (FileNotFoundError, subprocess.SubprocessError, OSError):
+            return True     # can't tell; assume fine rather than thrash
 
     # -- loop -----------------------------------------------------------------
     def _loop(self) -> None:
-        # Each window is its own recognizer session; between windows we check
-        # the stop flag, so stopping is immediate from the user's point of view.
-        cfg = _WindowConfig(self.cfg, _WINDOW_SECONDS)
+        path = self._spawn()
+        if path is None:
+            return
+        self._path = path
+        offset = 0
+        last_check = time.time()
+
         while not self._stop.is_set():
-            text, problem = listen_once_ex(cfg)
+            time.sleep(_POLL_SECONDS)
             if self._stop.is_set():
                 return
-            if problem:
-                self._failures += 1
-                # Three strikes: something is wrong (permissions, no device)
-                # and retrying in a tight loop helps nobody.
-                if self._failures >= 3:
-                    _log.warning("wake listener stopping: %s", problem)
-                    if callable(self.on_error):
-                        self.on_error(problem)
-                    return
+
+            # If the helper died (crash, or the user revoked the microphone),
+            # bring it back rather than going quietly deaf.
+            if time.time() - last_check > 10:
+                last_check = time.time()
+                if not self._helper_alive():
+                    _log.warning("streaming helper died; restarting")
+                    new_path = self._spawn()
+                    if new_path is None:
+                        return
+                    path, offset, self._path = new_path, 0, new_path
+                    continue
+
+            try:
+                size = path.stat().st_size
+            except OSError:
                 continue
-            self._failures = 0
-            if not text:
+            if size <= offset:
+                continue
+            try:
+                with path.open("r", encoding="utf-8", errors="replace") as fh:
+                    fh.seek(offset)
+                    chunk = fh.read()
+                    offset = fh.tell()
+            except OSError:
                 continue
 
-            match = self._pattern().search(text)
-            if not match:
-                continue
+            for line in chunk.splitlines():
+                line = line.strip()
+                if not line or self._stop.is_set():
+                    continue
+                # Discard anything heard while Bob was talking.
+                if self._muted.is_set():
+                    continue
+                self._handle(line)
 
+        # Leaving the loop means we are done listening.
+        stop_helpers()
+
+    def _handle(self, line: str) -> None:
+        match = self._pattern().search(line)
+        if match:
             trailing = (match.group(1) or "").strip()
             _log.info("wake word heard; trailing=%r", trailing)
             if callable(self.on_wake):
                 self.on_wake()
             if trailing:
-                # "Hey Prowl, open Safari" — the command came with the wake word.
+                self._armed_until = 0.0
                 if callable(self.on_command):
                     self.on_command(trailing)
-                continue
-            # Bare wake word: listen again for the actual request.
-            command, problem = listen_once_ex(self.cfg)
-            if self._stop.is_set():
-                return
-            if command and callable(self.on_command):
-                self.on_command(command)
-            elif problem and callable(self.on_error):
-                self.on_error(problem)
+            else:
+                # Bare "Hey Bob" — the next thing said is the command.
+                self._armed_until = time.time() + _ARM_SECONDS
+            return
 
-
-class _WindowConfig:
-    """Config view with a shorter capture window, for the waiting phase."""
-
-    def __init__(self, cfg, seconds: int):
-        self._cfg, self._seconds = cfg, seconds
-
-    def get(self, key, default=None):
-        if key == "stt_max_seconds":
-            return self._seconds
-        return self._cfg.get(key, default)
+        # Not a wake word; if he was just called, this is the command.
+        if time.time() < self._armed_until:
+            self._armed_until = 0.0
+            _log.info("wake command: %r", line)
+            if callable(self.on_command):
+                self.on_command(line)

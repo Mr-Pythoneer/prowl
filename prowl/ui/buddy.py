@@ -52,32 +52,41 @@ _MINI_SCALE = 0.55
 _MINI_W, _MINI_H = 74, 82
 _FPS = 30.0
 
-# Redrawing 30 times a second costs ~10% of a CPU core all day, which is real
-# battery on a laptop — and an idle sway does not need 30fps. The timer still
-# ticks at _FPS (cheap: it only advances a couple of floats) but the expensive
-# part, the redraw, is throttled per state. Blinks always draw, so they stay
-# smooth at any rate.
-# On battery, throttled: the idle sway does not need 30fps and the saving is
-# most of a CPU core over a day. Plugged in, there is nothing to save, so run
-# it smooth. Which set is used is decided by _on_ac_power(), rechecked
-# periodically — see BuddyView.tick_.
-_REDRAW_BATTERY = {
-    "talking": 1,        # 30fps — the mouth moves with speech, keep it smooth
-    "listening": 2,      # 15fps — pulsing rings
-    "thinking": 2,       # 15fps — bouncing dots
-    "idle": 6,           # 5fps  — a slow sway; imperceptible at this speed
-    "sleeping": 10,      # 3fps  — breathing
+# Animation rate, in frames per second, per state and power source.
+#
+# Throttling only the *redraw* turned out not to help: measured in the running
+# app, an idle buddy still cost ~6% of a CPU core with redraws at 1fps, because
+# the timer itself was firing 30 times a second and every tick crosses the
+# Objective-C to Python bridge. So the timer's own interval is what changes
+# here. Drawing is cheap by comparison (~0.4 ms/frame).
+# On battery the rates drop further: the idle sway does not need to be smooth,
+# and this is most of a CPU core over a day. Plugged in there is nothing to
+# save, so it runs nicer. Which table applies is decided by _on_ac_power(),
+# rechecked every _POWER_POLL_SECONDS — see BuddyView.tick_.
+_FPS_BATTERY = {
+    "talking": 24.0,     # the mouth moves with speech, so keep it smooth
+    "listening": 15.0,   # pulsing rings
+    "thinking": 15.0,    # bouncing dots
+    "idle": 1.0,         # static pose; this tick only schedules blinks
+    "sleeping": 0.5,
 }
-_REDRAW_PLUGGED = {
-    "talking": 1,
-    "listening": 1,
-    "thinking": 1,
-    "idle": 2,           # 15fps — visibly smoother sway
-    "sleeping": 4,
+_FPS_PLUGGED = {
+    "talking": 30.0,
+    "listening": 20.0,
+    "thinking": 20.0,
+    "idle": 1.0,
+    "sleeping": 0.5,
 }
 
-# How often to re-ask the OS about the power source (in animation frames).
-_POWER_POLL_FRAMES = int(_FPS * 20)
+# While a blink is in progress the rate jumps to this, whatever the state, so
+# the eyes close smoothly instead of snapping shut.
+_BLINK_FPS = 20.0
+
+# States that hold a fixed pose, so a tick with no blink can skip the redraw.
+_STATIC_STATES = ("idle", "sleeping")
+
+# How often to re-ask the OS about the power source, in seconds.
+_POWER_POLL_SECONDS = 20.0
 
 
 def _on_ac_power() -> bool:
@@ -138,10 +147,12 @@ class BuddyView(NSView):
         self._bubble_rect = NSMakeRect(0, 0, 0, 0)
         self._mini = False
         self._scale = 1.0
-        self._frame = 0
         self._halo_cache = {}
+        self._interval = 1.0 / 10.0     # replaced by _retime() on show()
+        self._was_blinking = False
+        self._power_elapsed = 0.0
+        self._owner = None              # set by Buddy, so state can re-time
         self._on_ac = _on_ac_power()
-        self._power_checked = 0
         self._drag_origin = None
         self._on_click = None
         return self
@@ -156,10 +167,26 @@ class BuddyView(NSView):
             # the eyes stuck shut until the next cycle.
             self._blink = 0.0
             self._blink_at = random.uniform(1.5, 4.0)
+            self._retime()
         self.setNeedsDisplay_(True)
 
     def state(self):
         return self._state
+
+    @objc.python_method
+    def desired_interval(self) -> float:
+        """Seconds between frames for the current state and power source."""
+        if self._blink > 0.01:
+            return 1.0 / _BLINK_FPS
+        table = _FPS_PLUGGED if self._on_ac else _FPS_BATTERY
+        return 1.0 / max(0.25, table.get(self._state, 8.0))
+
+    @objc.python_method
+    def _retime(self) -> None:
+        """Ask the owning Buddy to reschedule its timer at the new rate."""
+        owner = self._owner
+        if owner is not None:
+            owner.retime()
 
     def setMini_(self, flag):
         """Shrink to just the character (no bubble), or restore full size."""
@@ -179,7 +206,7 @@ class BuddyView(NSView):
         self.setNeedsDisplay_(True)
 
     def tick_(self, _timer):
-        dt = 1.0 / _FPS
+        dt = self._interval
         self._t += dt
 
         # Blinking: a quick shut/open, then a new random delay. Sleeping eyes
@@ -208,23 +235,30 @@ class BuddyView(NSView):
 
         if self._text and time.time() > self._text_until:
             self._text = ""
-            self._frame = 0
-        self._halo_cache = {}
-        self._on_ac = _on_ac_power()
-        self._power_checked = 0          # the bubble vanishing must be drawn now
+            self._halo_cache = {}
+        self._interval = 1.0 / 10.0     # replaced by _retime() on show()
+        self._was_blinking = False
+        self._power_elapsed = 0.0
+        self._owner = None              # set by Buddy, so state can re-time
+        self._on_ac = _on_ac_power()          # the bubble vanishing must be drawn now
 
-        self._frame += 1
         # Re-check the power source now and then; plugging in should smooth the
         # animation out without restarting anything.
-        self._power_checked += 1
-        if self._power_checked >= _POWER_POLL_FRAMES:
-            self._power_checked = 0
+        self._power_elapsed += dt
+        if self._power_elapsed >= _POWER_POLL_SECONDS:
+            self._power_elapsed = 0.0
+            was = self._on_ac
             self._on_ac = _on_ac_power()
+            if was != self._on_ac:
+                self._retime()
 
-        table = _REDRAW_PLUGGED if self._on_ac else _REDRAW_BATTERY
-        every = table.get(self._state, 4)
-        # A blink is short and fast; drop the throttle while one is in progress.
-        if self._blink > 0.01 or self._frame % every == 0:
+        # A static state with nothing happening needs no redraw at all: the
+        # tick is then only here to schedule the next blink.
+        blinking = self._blink > 0.01
+        if blinking != self._was_blinking:
+            self._was_blinking = blinking
+            self._retime()          # burst for the blink, then back down
+        if self._state not in _STATIC_STATES or blinking or self._text:
             self.setNeedsDisplay_(True)
 
     # -- geometry -------------------------------------------------------------
@@ -233,8 +267,11 @@ class BuddyView(NSView):
         """Return (dx, dy, lean, squash) for the current state and time."""
         t = self._t
         if self._state == "idle":
-            return (math.sin(t * 1.1) * 3.0, math.sin(t * 2.2) * 2.0,
-                    math.sin(t * 1.1) * 0.04, 1.0)
+            # Deliberately motionless. Live animation in a transparent
+            # always-on-top window costs ~8% of a CPU core continuously, which
+            # is not a fair price for a sway nobody is watching. He still
+            # blinks, and comes fully alive the moment he has something to do.
+            return (0.0, 0.0, 0.0, 1.0)
         if self._state == "listening":
             # Leans toward the user and holds still, so it reads as attentive.
             return (0.0, 2.0 + math.sin(t * 3.0) * 1.5, 0.16, 1.0)
@@ -639,13 +676,30 @@ class Buddy:
         self.panel = panel
         self.view = view
         self._timer = None
+        self._interval = 0.0
+        view._owner = self
 
     # -- lifecycle ------------------------------------------------------------
     def show(self):
         self.panel.orderFrontRegardless()
         if self._timer is None:
-            self._timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-                1.0 / _FPS, self.view, "tick:", None, True)
+            self.retime()
+
+    def retime(self) -> None:
+        """(Re)install the animation timer at the rate the current state wants.
+
+        The timer's own frequency is the expensive part — not the drawing — so
+        this is what actually saves the battery.
+        """
+        interval = self.view.desired_interval()
+        if self._timer is not None:
+            if abs(self._interval - interval) < 1e-6:
+                return
+            self._timer.invalidate()
+        self._interval = interval
+        self.view._interval = interval
+        self._timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            interval, self.view, "tick:", None, True)
 
     def hide(self):
         if self._timer is not None:
@@ -663,9 +717,11 @@ class Buddy:
         _on_main(lambda: self.view.setState_(state))
 
     def say(self, text: str):
+        """Show *text* in the bubble and start talking. Empty text clears it."""
         def _do():
-            self.view.setText_(text)
-            self.view.setState_("talking")
+            self.view.setText_(text or "")
+            if (text or "").strip():
+                self.view.setState_("talking")
         _on_main(_do)
 
     def set_mini(self, mini: bool):

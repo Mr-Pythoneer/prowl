@@ -27,7 +27,8 @@ from ..core.context import Context
 from ..core.logs import get_logger
 from ..executor import Orchestrator
 from ..voice import stt
-from ..voice.tts import speak_async
+from ..voice.tts import speak_async, stop as tts_stop
+from ..voice.control import match_control
 from ..voice.wake import WakeListener
 from . import hotkey, hud
 
@@ -49,6 +50,8 @@ class ProwlApp(rumps.App):
         super().__init__(_TITLE, title=_TITLE, quit_button=None)
         self.cfg = cfg
         self.log = get_logger()
+        # Last thing spoken, for "say that again".
+        self._last_said = ""
 
         # One Orchestrator for the whole session (loads skills/brain/router once).
         self.orch = Orchestrator(cfg)
@@ -79,9 +82,10 @@ class ProwlApp(rumps.App):
                     # Introduce itself once, after the app loop is up — it is
                     # the only hint that clicking or F5 starts a voice turn.
                     name = cfg.get("assistant_name", "Bob")
-                    threading.Timer(1.2, lambda: self.buddy.say(
+                    # Through _speak, so the bubble clears when he stops
+                    # talking rather than after a guessed delay.
+                    threading.Timer(1.2, lambda: self._speak(
                         f"Hi, I'm {name}. Press F5 or click me to talk.")).start()
-                    threading.Timer(6.0, lambda: self._buddy("idle")).start()
         except Exception:  # noqa: BLE001 - the buddy is a nicety
             self.log.exception("buddy unavailable; menu still works")
 
@@ -179,7 +183,54 @@ class ProwlApp(rumps.App):
 
     def _on_wake_command(self, text: str) -> None:
         self.log.info("wake command: %r", text)
+        if self._handle_control(text):
+            return
         self._handle(text)
+
+    def _handle_control(self, text: str) -> bool:
+        """Act on a control phrase ("stop", "hide", ...). True if handled.
+
+        These bypass the router entirely: "stop" that waits on a model call has
+        already failed at its job.
+        """
+        action = match_control(text)
+        if action is None:
+            return False
+        self.log.info("control: %s", action)
+
+        if action == "stop":
+            tts_stop()
+            self._after_speaking()
+        elif action == "sleep":
+            self.wake.stop()
+            self.cfg.set("always_listening", False)
+            self._buddy("sleeping")
+            self._tell("Sleeping. Press F5 or click me to wake me.")
+        elif action == "wake":
+            self.cfg.set("always_listening", True)
+            self.wake.start()
+            self._speak("I'm listening.")
+        elif action == "hide":
+            if self.buddy is not None:
+                self.buddy.hide_threadsafe()
+            self.cfg.set("buddy_enabled", False)
+        elif action == "show":
+            if self.buddy is not None:
+                self.buddy.show_threadsafe()
+            self.cfg.set("buddy_enabled", True)
+            self._buddy("idle")
+        elif action == "repeat":
+            if self._last_said:
+                self._speak(self._last_said)
+            else:
+                self._speak("I haven't said anything yet.")
+        elif action == "help":
+            self._speak(
+                "Try: open Safari, turn it up, take a screenshot, what's on my "
+                "clipboard, clean up my Mac, or ask me anything. Say stop to "
+                "cut me off.")
+        self.cfg.save()
+        return True
 
     def _on_wake_error(self, problem: str) -> None:
         self.cfg.set("always_listening", False)
@@ -216,13 +267,31 @@ class ProwlApp(rumps.App):
 
     # -- Context callbacks ---------------------------------------------------
     def _speak(self, text: str) -> None:
-        """Show *text* (buddy bubble, else a banner) and say it aloud."""
+        """Show *text* (buddy bubble, else a banner) and say it aloud.
+
+        The bubble is cleared when the speech itself finishes rather than on a
+        guessed timer, so the words are on screen exactly as long as Bob is
+        saying them. The wake listener is muted meanwhile — the microphone
+        hears him perfectly well, and without this he answers himself.
+        """
         text = (text or "").strip()
         if not text:
             return
+        self._last_said = text
         self._tell(text)
-        if self.cfg.voice_enabled:
-            speak_async(text, self.cfg)
+        if not self.cfg.voice_enabled:
+            return
+
+        self.wake.mute()
+        speak_async(text, self.cfg, on_done=self._after_speaking)
+
+    def _after_speaking(self) -> None:
+        """Called when TTS finishes (or is stopped): clear bubble, hear again."""
+        self.wake.unmute()
+        if self.buddy is not None:
+            self.buddy.say("")          # empty text clears the bubble
+            # Back to idle even while the wake listener runs — see note below.
+            self.buddy.set_state("idle")
 
     def _confirm(self, question: str) -> bool:
         """Ask a yes/no question via an osascript dialog; True = go ahead."""
@@ -252,7 +321,7 @@ class ProwlApp(rumps.App):
         finally:
             # _speak() puts it in "talking"; settle back once the turn is done.
             threading.Timer(2.5, lambda: self._buddy(
-                "listening" if self.wake.running else "idle")).start()
+                "idle")).start()
 
     def _talk(self) -> None:
         """Capture one utterance and act on it (background thread only)."""
@@ -369,6 +438,33 @@ class ProwlApp(rumps.App):
         rumps.quit_application()
 
 
+def _claim_app_identity(name: str) -> None:
+    """Present as *name* rather than "Python", and stay out of the app switcher.
+
+    Run from a bundle the process is still the Python interpreter, so macOS
+    labels it "Python" in the app menu, Force Quit and Activity Monitor — and a
+    stray Cmd-Q on it kills the assistant. Patching the main bundle's info
+    dictionary renames it, and the accessory activation policy removes the Dock
+    icon and the Cmd-Tab entry entirely, so there is nothing to quit by
+    accident: the menu's own Quit item is the only way out.
+    """
+    try:
+        from AppKit import (
+            NSApplication, NSApplicationActivationPolicyAccessory, NSBundle,
+        )
+
+        bundle = NSBundle.mainBundle()
+        for info in (bundle.localizedInfoDictionary(), bundle.infoDictionary()):
+            if info is not None:
+                info["CFBundleName"] = name
+                info["CFBundleDisplayName"] = name
+        NSApplication.sharedApplication().setActivationPolicy_(
+            NSApplicationActivationPolicyAccessory)
+    except Exception:  # noqa: BLE001 - cosmetic; never block startup
+        get_logger().debug("could not set app identity", exc_info=True)
+
+
 def run_menubar(cfg) -> None:
     """Start the always-on menu-bar app. Blocks until the user quits."""
+    _claim_app_identity(str(cfg.get("assistant_name", "Bob")))
     ProwlApp(cfg).run()

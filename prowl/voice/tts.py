@@ -41,6 +41,8 @@ _SPEAK_TIMEOUT = 120
 
 # The most recently spawned async process, so stop() can kill it.
 _proc: subprocess.Popen[bytes] | None = None
+# Callback for the utterance currently being spoken (see speak_async).
+_done_cb = None
 _lock = threading.Lock()
 
 
@@ -174,13 +176,20 @@ def speak(text: str, cfg: Any = None) -> None:
         pass
 
 
-def speak_async(text: str, cfg: Any = None) -> None:
-    """Speak *text* without waiting. Replaces any in-flight speech. Never raises."""
+def speak_async(text: str, cfg: Any = None, on_done=None) -> None:
+    """Speak *text* without waiting. Replaces any in-flight speech. Never raises.
+
+    ``on_done`` is called once the speech ends — whether it finished naturally
+    or was cut off by :func:`stop`. Callers use it to clear the on-screen text
+    exactly when the voice stops, instead of guessing at a duration.
+    """
     text = (text or "").strip()
     if not text:
+        if callable(on_done):
+            on_done()
         return
     # A new utterance supersedes the old one.
-    stop()
+    stop(notify=False)
     try:
         proc = subprocess.Popen(
             _build_cmd(text, cfg),
@@ -188,20 +197,54 @@ def speak_async(text: str, cfg: Any = None) -> None:
             stderr=subprocess.DEVNULL,
         )
     except (FileNotFoundError, OSError):
+        if callable(on_done):
+            on_done()
         return
     except Exception:
+        if callable(on_done):
+            on_done()
         return
     with _lock:
-        global _proc
+        global _proc, _done_cb
         _proc = proc
+        _done_cb = on_done
+
+    if callable(on_done):
+        # Waiting on the process is the only reliable "speech ended" signal
+        # `say` gives us; a thread per utterance is cheap and short-lived.
+        threading.Thread(target=_wait_then_notify, args=(proc, on_done),
+                         daemon=True, name="prowl-tts-wait").start()
 
 
-def stop() -> None:
-    """Terminate the current async speech, if any. Never raises."""
-    global _proc
+def _wait_then_notify(proc, callback) -> None:
+    try:
+        proc.wait()
+    except Exception:  # noqa: BLE001 - a dead process is still "done"
+        pass
+    with _lock:
+        global _done_cb
+        # Only the newest utterance's callback should fire.
+        if _done_cb is not callback:
+            return
+        _done_cb = None
+    try:
+        callback()
+    except Exception:  # noqa: BLE001 - a bad callback must not kill the thread
+        pass
+
+
+def stop(notify: bool = True) -> None:
+    """Terminate the current async speech, if any. Never raises.
+
+    The waiter thread sees the process exit and fires ``on_done``, so a stopped
+    utterance clears its text just like a finished one.
+    """
+    global _proc, _done_cb
     with _lock:
         proc = _proc
         _proc = None
+        if not notify:
+            _done_cb = None
     if proc is None:
         return
     try:
