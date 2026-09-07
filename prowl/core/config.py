@@ -83,6 +83,9 @@ DEFAULTS: dict[str, Any] = {
     # shown rather than spoken — for when the room is quiet or a command is
     # too fiddly to dictate.
     "type_hotkey": "<f4>",
+    # Minutes of being left completely alone before he lies down for a nap.
+    # He wakes on any interaction. 0 turns napping off.
+    "sleep_after_minutes": 6,
                                  # (F5 is the mic key on Apple keyboards;
                                  #  bare key names are wrapped automatically)
     # What you call him. Used as the spoken wake word and in his own replies.

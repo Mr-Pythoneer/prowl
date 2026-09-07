@@ -30,10 +30,28 @@ from ..executor import Orchestrator
 from ..voice import stt
 from ..voice.tts import speak_async, stop as tts_stop
 from ..voice.control import match_control
+from .buddy import match_trick
 from ..voice.wake import WakeListener
 from . import hotkey, hud
 
 _TITLE = "🐾"
+
+# A one-liner per trick. Silence after "do a backflip" reads as a failure even
+# when the animation played.
+_TRICK_REPLIES = {
+    "backflip": "Ta-da!",
+    "spin": "Wheee.",
+    "jump": "Hup!",
+    "dance": "Now you're talking.",
+    "wave": "Hello!",
+    "nod": "Yep.",
+    "shake": "Nope.",
+    "shrug": "No idea, sorry.",
+    "stretch": "Much better.",
+    "cheer": "Nice one!",
+    "tumble": "Whoa!",
+    "wobble": "Wobble wobble.",
+}
 
 # Cap the doctor subprocess so a hung check can't wedge the worker thread.
 _DOCTOR_TIMEOUT = 60
@@ -77,6 +95,11 @@ class ProwlApp(rumps.App):
             self.buddy = Buddy(on_click=lambda: _run_bg(self._talk))
             if cfg.get("buddy_mini", False):
                 self.buddy.set_mini(True)
+            try:
+                mins = float(cfg.get("sleep_after_minutes", 6) or 0)
+            except (TypeError, ValueError):
+                mins = 6.0
+            self.buddy.set_sleep_after(mins * 60.0)
             if cfg.get("buddy_enabled", True):
                 self.buddy.show()
                 if cfg.get("buddy_greet", True):
@@ -181,15 +204,30 @@ class ProwlApp(rumps.App):
 
     def _on_wake(self) -> None:
         """Wake word heard — perk up and let the user know we're listening."""
+        self._wake_buddy()
         self._buddy("listening")
         if self.cfg.voice_enabled:
             speak_async("Yes?", self.cfg)
 
     def _on_wake_command(self, text: str) -> None:
         self.log.info("wake command: %r", text)
-        if self._handle_control(text):
+        if self._handle_trick(text) or self._handle_control(text):
             return
         self._handle(text)
+
+    def _handle_trick(self, text: str) -> bool:
+        """Perform a trick if that's what was asked for. True if handled."""
+        if self.buddy is None:
+            return False
+        name = match_trick(text)
+        if name is None:
+            return False
+        self.log.info("trick: %s", name)
+        self.buddy.play_trick(name)
+        line = _TRICK_REPLIES.get(name)
+        if line and self.cfg.voice_enabled:
+            speak_async(line, self.cfg)
+        return True
 
     def _handle_control(self, text: str) -> bool:
         """Act on a control phrase ("stop", "hide", ...). True if handled.
@@ -260,6 +298,12 @@ class ProwlApp(rumps.App):
             except Exception:  # noqa: BLE001
                 self.log.exception("buddy say failed")
         hud.notify(_TITLE, text)
+
+    def _wake_buddy(self) -> None:
+        """Any interaction counts as activity, and ends a nap."""
+        if self.buddy is None:
+            return
+        self.buddy.note_activity()
 
     def _buddy(self, state: str) -> None:
         """Set the buddy's animation state, if it exists."""
@@ -340,7 +384,11 @@ class ProwlApp(rumps.App):
                 ctx = dataclasses.replace(self.ctx, speak=self._show_only)
             else:
                 ctx = self.ctx
-            self.orch.handle(text, ctx)
+            result = self.orch.handle(text, ctx)
+            # A small reaction makes success and failure legible at a glance,
+            # without another spoken sentence.
+            if self.buddy is not None and result is not None:
+                self.buddy.play_trick("nod" if result.ok else "shake")
         except Exception:  # noqa: BLE001 - a bad turn must not kill the worker
             self.log.exception("handling utterance failed")
             self._tell("Sorry — that request failed. See the log.")
@@ -351,6 +399,7 @@ class ProwlApp(rumps.App):
 
     def _talk(self) -> None:
         """Capture one utterance and act on it (background thread only)."""
+        self._wake_buddy()
         self._buddy("listening")
         # The wake listener holds the microphone continuously; two recognisers
         # on one input device is what caused the intermittent (and misleading)
@@ -371,7 +420,7 @@ class ProwlApp(rumps.App):
             self._buddy("idle")
             self._tell(problem or "Didn't catch anything — only silence.")
             return
-        if self._handle_control(text):
+        if self._handle_trick(text) or self._handle_control(text):
             return
         self._handle(text)
 
@@ -383,13 +432,14 @@ class ProwlApp(rumps.App):
         """Type-hotkey callback: ask for text, answer in text only."""
         _run_bg(self._type_turn)
 
-    def _type_turn(self) -> None:
+    def _type_turn(self) -> None:  # noqa: D401
         """One typed request, answered silently in the bubble.
 
         Same brain and skills as a spoken turn — only the reply channel
         differs. Nothing is said aloud, so this is usable in a meeting or with
         headphones off.
         """
+        self._wake_buddy()
         try:
             text = hud.ask_text("What do you need?")
         except Exception:  # noqa: BLE001 - the dialog is not critical
@@ -398,7 +448,7 @@ class ProwlApp(rumps.App):
             return
         if not text:
             return
-        if self._handle_control(text):
+        if self._handle_trick(text) or self._handle_control(text):
             return
         self._handle(text, silent=True)
 

@@ -25,13 +25,15 @@ from __future__ import annotations
 
 import math
 import random
+import re
 import subprocess
 import time
 
 import objc
 from AppKit import (
     NSApplication, NSBezierPath, NSColor, NSFont, NSFontAttributeName,
-    NSColorSpace, NSCompositingOperationSourceOver, NSGradient, NSImage,
+    NSAffineTransform, NSColorSpace, NSCompositingOperationSourceOver,
+    NSGradient, NSGraphicsContext, NSImage,
     NSMutableParagraphStyle, NSParagraphStyleAttributeName,
     NSLineBreakByWordWrapping, NSStringDrawingUsesLineFragmentOrigin,
     NSForegroundColorAttributeName, NSMakePoint, NSMakeRect, NSPanel, NSScreen,
@@ -101,6 +103,74 @@ def _on_ac_power() -> bool:
 
 STATES = ("idle", "listening", "thinking", "talking", "sleeping")
 
+
+# --- tricks -----------------------------------------------------------------
+# Short one-off animations. Each runs for its duration, overriding the state's
+# own pose, then hands control back. Durations are tuned so a trick reads as
+# deliberate rather than twitchy; anything under ~0.6s just looks like a glitch.
+TRICKS: dict[str, float] = {
+    "backflip": 1.15,
+    "spin": 1.0,
+    "jump": 0.7,
+    "dance": 2.4,
+    "wave": 1.3,
+    "nod": 0.8,
+    "shake": 0.8,
+    "shrug": 1.2,
+    "stretch": 1.6,
+    "cheer": 1.2,
+    "tumble": 1.6,
+    "wobble": 0.9,
+}
+
+# Phrases that ask for one, matched whole. Kept here next to the animations so
+# adding a trick means touching one file.
+TRICK_PHRASES: tuple[tuple[str, str], ...] = (
+    ("backflip", r"(?:do|make|perform)?\s*(?:a|an)?\s*back\s*-?\s*flip"),
+    ("backflip", r"flip (?:out|over)"),
+    ("spin", r"(?:do|make)?\s*(?:a|an)?\s*(?:360|three sixty|spin(?: around)?|twirl)"),
+    ("jump", r"(?:jump|hop|bounce)(?: up)?"),
+    ("dance", r"(?:dance|boogie|bust a move|get down)"),
+    ("wave", r"(?:wave|say hi|say hello|greet me)"),
+    ("nod", r"(?:nod|say yes)"),
+    ("shake", r"(?:shake your head|say no)"),
+    ("shrug", r"(?:shrug|i dunno|dunno)"),
+    ("stretch", r"(?:stretch|wake up your body|limber up)"),
+    ("cheer", r"(?:cheer|celebrate|yay|hooray|nice one)"),
+    # "roll" is often transcribed as "row", and "do a" as "do as" — matching
+    # the mishearing costs nothing and saves the trick from failing silently.
+    ("tumble", r"(?:barrel|barell|barrell)\s*-?\s*(?:roll|role|row)"),
+    ("tumble", r"(?:tumble|roll over|fall over|somersault)"),
+    ("wobble", r"(?:wobble|wiggle|shimmy)"),
+)
+
+
+def match_trick(utterance: str) -> str | None:
+    """Return the trick *utterance* asks for, or None.
+
+    Anchored whole-phrase matching: "jump" is a trick, but "jump to the next
+    song" is a media command and must not be stolen.
+    """
+    text = (utterance or "").strip().strip(".!?,")
+    if not text:
+        return None
+    for name, body in TRICK_PHRASES:
+        if re.fullmatch(
+                rf"\s*(?:bob[,\s]+)?(?:can you |could you |please )?"
+                rf"(?:do as |do a |do an )?{body}\s*", text, re.I):
+            return name
+    return None
+
+
+# How far he tips over when asleep, in degrees — lying on his side.
+_SLEEP_ROT = -78.0
+
+
+def _ease(p: float) -> float:
+    """Ease-in-out on 0..1, so a spin starts and ends gently."""
+    return p * p * (3.0 - 2.0 * p)
+
+
 # --- palette -----------------------------------------------------------------
 # Warm metal for the wire, near-black ink for the eyes. Deliberately not a
 # gradient-heavy look: flat colours with one soft shadow read better at this
@@ -150,6 +220,10 @@ class BuddyView(NSView):
         self._scale = 1.0
         self._interval = 1.0 / 10.0     # replaced by _retime() on show()
         self._was_blinking = False
+        self._trick = None           # name of the running trick, or None
+        self._trick_t = 0.0
+        self._last_activity = time.time()
+        self._sleep_after = 0.0      # seconds of idleness before napping
         self._power_elapsed = 0.0
         self._owner = None              # set by Buddy, so state can re-time
         self._on_ac = _on_ac_power()
@@ -158,9 +232,25 @@ class BuddyView(NSView):
         return self
 
     # -- state ----------------------------------------------------------------
+    def playTrick_(self, name):
+        """Start a one-off animation. Unknown names are ignored."""
+        if name not in TRICKS:
+            return
+        self._trick = name
+        self._trick_t = 0.0
+        self._last_activity = time.time()
+        self._retime()               # tricks always run at full frame rate
+        self.setNeedsDisplay_(True)
+
+    def noteActivity(self):
+        """Reset the idle timer — he only nods off when actually left alone."""
+        self._last_activity = time.time()
+
     def setState_(self, state):
         state = state if state in STATES else "idle"
         if state != self._state:
+            if state != "sleeping":
+                self._last_activity = time.time()
             self._state = state
             self._t = 0.0
             # _t drives the blink schedule; resetting it mid-blink would leave
@@ -176,11 +266,15 @@ class BuddyView(NSView):
     @objc.python_method
     def _pose_is_fixed(self) -> bool:
         """True when the current pose won't change, so a redraw is pointless."""
+        if self._trick is not None:
+            return False
         return self._state in _STATIC_STATES and not self._on_ac
 
     @objc.python_method
     def desired_interval(self) -> float:
         """Seconds between frames for the current state and power source."""
+        if self._trick is not None:
+            return 1.0 / 30.0
         if self._blink > 0.01:
             return 1.0 / _BLINK_FPS
         table = _FPS_PLUGGED if self._on_ac else _FPS_BATTERY
@@ -214,6 +308,14 @@ class BuddyView(NSView):
         dt = self._interval
         self._t += dt
 
+        if self._trick is not None:
+            self._trick_t += dt
+            if self._trick_t >= TRICKS.get(self._trick, 1.0):
+                self._trick = None
+                self._trick_t = 0.0
+                self._retime()
+            self.setNeedsDisplay_(True)
+
         # Blinking: a quick shut/open, then a new random delay. Sleeping eyes
         # stay closed, so skip it entirely.
         if self._state != "sleeping":
@@ -242,6 +344,9 @@ class BuddyView(NSView):
             self._text = ""
             self._interval = 1.0 / 10.0     # replaced by _retime() on show()
         self._was_blinking = False
+        self._trick = None           # name of the running trick, or None
+        self._trick_t = 0.0
+        self._last_activity = time.time()
         self._power_elapsed = 0.0
         self._owner = None              # set by Buddy, so state can re-time
         self._on_ac = _on_ac_power()          # the bubble vanishing must be drawn now
@@ -262,13 +367,26 @@ class BuddyView(NSView):
         if blinking != self._was_blinking:
             self._was_blinking = blinking
             self._retime()          # burst for the blink, then back down
+        # Left alone for long enough, he lies down for a nap. Any state change
+        # or trick counts as activity, so this only fires when genuinely idle.
+        if (self._state == "idle" and self._trick is None and not self._text
+                and self._sleep_after > 0
+                and time.time() - self._last_activity > self._sleep_after):
+            self.setState_("sleeping")
+
         if not self._pose_is_fixed() or blinking or self._text:
             self.setNeedsDisplay_(True)
 
     # -- geometry -------------------------------------------------------------
     @objc.python_method
     def _pose(self):
-        """Return (dx, dy, lean, squash) for the current state and time."""
+        """Return (dx, dy, lean, squash, rot) for right now.
+
+        A running trick takes over completely — it is a deliberate performance
+        and shouldn't be muddied by the idle sway underneath it.
+        """
+        if self._trick is not None:
+            return self._trick_pose()
         t = self._t
         if self._state == "idle":
             if not self._on_ac:
@@ -276,27 +394,108 @@ class BuddyView(NSView):
                 # window costs ~8% of a CPU core continuously — not a fair price
                 # for a sway nobody is watching. He still blinks, and comes
                 # fully alive the moment he has something to do.
-                return (0.0, 0.0, 0.0, 1.0)
+                return (0.0, 0.0, 0.0, 1.0, 0.0)
             # Plugged in there is nothing to save, so he breathes: a slow sway
             # with a second, slower component so the motion never looks like a
             # loop, plus a gentle bob.
             return (math.sin(t * 0.9) * 3.4 + math.sin(t * 0.37) * 1.6,
                     math.sin(t * 1.7) * 1.8,
                     math.sin(t * 0.9) * 0.045,
-                    1.0 + math.sin(t * 1.7) * 0.012)
+                    1.0 + math.sin(t * 1.7) * 0.012, 0.0)
         if self._state == "listening":
             # Leans toward the user and holds still, so it reads as attentive.
-            return (0.0, 2.0 + math.sin(t * 3.0) * 1.5, 0.16, 1.0)
+            return (0.0, 2.0 + math.sin(t * 3.0) * 1.5, 0.16, 1.0, 0.0)
         if self._state == "thinking":
-            return (math.sin(t * 0.8) * 2.0, math.sin(t * 1.6) * 1.5, -0.12, 1.0)
+            return (math.sin(t * 0.8) * 2.0, math.sin(t * 1.6) * 1.5, -0.12, 1.0, 0.0)
         if self._state == "talking":
             bob = abs(math.sin(t * 7.5))
             return (math.sin(t * 3.1) * 2.0, bob * 5.0, math.sin(t * 3.1) * 0.05,
-                    1.0 - bob * 0.05)
-        # sleeping — slow breathing (still, on battery)
+                    1.0 - bob * 0.05, 0.0)
+        # sleeping — lying on his side, breathing slowly.
         if not self._on_ac:
-            return (0.0, 0.0, -0.22, 1.0)
-        return (0.0, math.sin(t * 0.9) * 2.0, -0.22, 1.0 + math.sin(t * 0.9) * 0.02)
+            return (0.0, 0.0, 0.0, 1.0, _SLEEP_ROT)
+        return (0.0, math.sin(t * 0.7) * 1.2, 0.0,
+                1.0 + math.sin(t * 0.7) * 0.02, _SLEEP_ROT)
+
+    # -- tricks ---------------------------------------------------------------
+    @objc.python_method
+    def _trick_pose(self):
+        """Pose for the running trick, as (dx, dy, lean, squash, rot)."""
+        name = self._trick
+        dur = TRICKS.get(name, 1.0)
+        # p runs 0..1 across the trick.
+        p = max(0.0, min(1.0, self._trick_t / dur))
+        t = self._trick_t
+
+        if name == "backflip":
+            # Crouch, launch, rotate a full turn at the top, land and settle.
+            if p < 0.16:                       # anticipation
+                k = p / 0.16
+                return (0.0, -4.0 * k, 0.0, 1.0 + 0.10 * k, 0.0)
+            if p < 0.82:
+                k = (p - 0.16) / 0.66
+                height = math.sin(k * math.pi) * 46.0
+                return (0.0, height, 0.0, 0.97, -360.0 * k)
+            k = (p - 0.82) / 0.18              # landing squash
+            return (0.0, 0.0, 0.0, 1.0 + 0.14 * math.sin(k * math.pi), 0.0)
+
+        if name == "spin":
+            # Flat spin: squash horizontally through the turn so it reads as
+            # rotating on the spot rather than tipping over.
+            k = _ease(p)
+            return (0.0, math.sin(p * math.pi) * 4.0, 0.0, 1.0, -360.0 * k)
+
+        if name == "jump":
+            height = math.sin(p * math.pi) * 34.0
+            squash = 1.0 + (0.16 * (1.0 - math.sin(p * math.pi)) if p < 0.12 or p > 0.88 else 0.0)
+            return (0.0, height, 0.0, squash, 0.0)
+
+        if name == "dance":
+            side = math.sin(t * 7.0) * 9.0
+            return (side, abs(math.sin(t * 14.0)) * 5.0, math.sin(t * 7.0) * 0.16,
+                    1.0, math.sin(t * 7.0) * 7.0)
+
+        if name == "wave":
+            # Tips side to side from the base, like an arm waving.
+            return (math.sin(t * 9.0) * 3.0, 2.0, math.sin(t * 9.0) * 0.34, 1.0,
+                    math.sin(t * 9.0) * 9.0)
+
+        if name == "nod":
+            return (0.0, -math.sin(t * 11.0) * 5.0, 0.0,
+                    1.0 + abs(math.sin(t * 11.0)) * 0.05, 0.0)
+
+        if name == "shake":
+            return (math.sin(t * 13.0) * 6.0, 0.0, math.sin(t * 13.0) * 0.10,
+                    1.0, math.sin(t * 13.0) * 5.0)
+
+        if name == "shrug":
+            lift = math.sin(p * math.pi) * 9.0
+            return (0.0, lift, 0.0, 1.0 - 0.05 * math.sin(p * math.pi),
+                    math.sin(p * math.pi * 2.0) * 6.0)
+
+        if name == "stretch":
+            k = math.sin(p * math.pi)
+            return (0.0, 3.0 * k, -0.10 * k, 1.0 + 0.16 * k, -5.0 * k)
+
+        if name == "cheer":
+            hop = abs(math.sin(t * 9.0))
+            return (0.0, hop * 16.0, 0.0, 1.0 - hop * 0.04,
+                    math.sin(t * 9.0) * 12.0)
+
+        if name == "tumble":
+            # A barrel roll: travels sideways and back while turning over once.
+            k = _ease(p)
+            return (math.sin(p * math.pi * 2.0) * 30.0,
+                    math.sin(p * math.pi) * 10.0,
+                    0.0, 1.0, -360.0 * k)
+
+        if name == "wobble":
+            damp = 1.0 - p
+            return (math.sin(t * 16.0) * 7.0 * damp, 0.0,
+                    math.sin(t * 16.0) * 0.18 * damp, 1.0,
+                    math.sin(t * 16.0) * 8.0 * damp)
+
+        return (0.0, 0.0, 0.0, 1.0, 0.0)
 
     # -- drawing --------------------------------------------------------------
     def isFlipped(self):
@@ -310,7 +509,7 @@ class BuddyView(NSView):
         scale = self._scale
         char_w, char_h = _CHAR_W * scale, _CHAR_H * scale
 
-        dx, dy, lean, squash = self._pose()
+        dx, dy, lean, squash, rot = self._pose()
         cx = bounds.size.width / 2.0 + dx * scale
         base_y = 14.0 * scale + dy * scale
 
@@ -320,7 +519,38 @@ class BuddyView(NSView):
 
         if self._state == "listening":
             self._draw_listening_ring(cx, base_y + char_h * 0.45, scale)
-        self._draw_clip(cx, base_y, lean, squash, char_w, char_h)
+
+        # Contact shadow: drawn here, outside any rotation, because a shadow
+        # stays on the ground while he flips. It shrinks as he rises, which is
+        # most of what sells a jump as leaving the floor.
+        lift = max(0.0, dy * scale)
+        shrink = max(0.35, 1.0 - lift / (char_h * 0.9))
+        sw = (char_w * 0.62) * shrink
+        _color(_INK, 0.12 * shrink).set()
+        NSBezierPath.bezierPathWithOvalInRect_(
+            NSMakeRect(cx - sw, 14.0 * scale - 8 * scale, sw * 2, 11 * scale)).fill()
+
+        # Asleep he lies on a pillow; the pillow is drawn first, under him.
+        if self._state == "sleeping" and self._trick is None:
+            self._draw_pillow(cx, base_y, char_w, char_h)
+
+        if abs(rot) > 0.01:
+            # Rotate about the character's middle so a flip turns on the spot
+            # instead of swinging around its feet.
+            NSGraphicsContext.saveGraphicsState()
+            pivot_x, pivot_y = cx, base_y + char_h * 0.5
+            tf = NSAffineTransform.transform()
+            tf.translateXBy_yBy_(pivot_x, pivot_y)
+            tf.rotateByDegrees_(rot)
+            tf.translateXBy_yBy_(-pivot_x, -pivot_y)
+            tf.concat()
+            self._draw_clip(cx, base_y, lean, squash, char_w, char_h)
+            NSGraphicsContext.restoreGraphicsState()
+        else:
+            self._draw_clip(cx, base_y, lean, squash, char_w, char_h)
+
+        if self._state == "sleeping" and self._trick is None:
+            self._draw_zzz(cx + char_w * 0.55, base_y + char_h * 0.75, scale)
         if self._state == "thinking":
             self._draw_thought_dots(cx + 16 * scale, base_y + char_h + 4, scale)
         # Mini mode is deliberately silent: the bubble is the bulky part.
@@ -377,11 +607,6 @@ class BuddyView(NSView):
         for pt in pts[1:]:
             wire.lineToPoint_(pt)
 
-        # Contact shadow on the desktop.
-        _color(_INK, 0.12).set()
-        NSBezierPath.bezierPathWithOvalInRect_(
-            NSMakeRect(cx - a - 8 * scale, bot - 8 * scale,
-                       (a + 8 * scale) * 2, 11 * scale)).fill()
 
         # Dark under-stroke, light core. That pairing is what makes him legible
         # on any wallpaper — the light core reads against a dark desktop, the
@@ -469,6 +694,58 @@ class BuddyView(NSView):
                 NSMakePoint(ex + 2.0 * scale, my - smile))
             _color(_INK, 0.8).set()
             path.stroke()
+
+    @objc.python_method
+    def _draw_pillow(self, cx, base_y, char_w, char_h):
+        """A small pillow, placed under his head once he has tipped over.
+
+        He rotates about his middle, so his head swings out to one side; a
+        pillow drawn at the centre ends up under his waist. Rotating the head's
+        offset by the same angle puts it where a pillow actually belongs.
+        """
+        angle = math.radians(_SLEEP_ROT)
+        head_offset = char_h * 0.32           # eyes sit this far above centre
+        head_dx = -head_offset * math.sin(angle)
+        w = char_h * 0.52
+        h = char_w * 0.40
+        x = cx + head_dx - w * 0.5
+        y = base_y + char_h * 0.07
+        rect = NSMakeRect(x, y, w, h)
+        _color(_INK, 0.10).set()
+        NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+            NSMakeRect(x, y - 1.5, w, h), h * 0.5, h * 0.5).fill()
+        _color((0.90, 0.91, 0.94), 0.97).set()
+        NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+            rect, h * 0.5, h * 0.5).fill()
+        _color(_INK, 0.10).set()
+        edge = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+            rect, h * 0.5, h * 0.5)
+        edge.setLineWidth_(1.0)
+        edge.stroke()
+        # A seam, so it reads as a pillow rather than a pill.
+        seam = NSBezierPath.bezierPath()
+        seam.setLineWidth_(1.0)
+        seam.moveToPoint_(NSMakePoint(x + w * 0.5, y + h * 0.16))
+        seam.lineToPoint_(NSMakePoint(x + w * 0.5, y + h * 0.84))
+        _color(_INK, 0.07).set()
+        seam.stroke()
+
+    @objc.python_method
+    def _draw_zzz(self, x, y, scale=1.0):
+        """Three Zs drifting up, each fading as it rises."""
+        for i in range(3):
+            phase = ((self._t * 0.42) + i / 3.0) % 1.0
+            size = (8.0 + i * 2.0) * scale
+            alpha = math.sin(phase * math.pi) * 0.55
+            if alpha <= 0.01:
+                continue
+            font = NSFont.systemFontOfSize_(size)
+            attrs = {NSFontAttributeName: font,
+                     NSForegroundColorAttributeName: _color(_INK, alpha)}
+            ns = NSString.stringWithString_("z")
+            ns.drawAtPoint_withAttributes_(
+                NSMakePoint(x + phase * 12.0 * scale,
+                            y + phase * 26.0 * scale), attrs)
 
     @objc.python_method
     def _draw_listening_ring(self, cx, cy, scale=1.0):
@@ -720,6 +997,18 @@ class Buddy:
 
     def toggle_mini(self):
         self.set_mini(not self.is_mini())
+
+    def play_trick(self, name: str):
+        """Run a one-off animation (see TRICKS). Safe from any thread."""
+        _on_main(lambda: self.view.playTrick_(name))
+
+    def note_activity(self):
+        """Reset the nap timer — he only sleeps when genuinely left alone."""
+        _on_main(self.view.noteActivity)
+
+    def set_sleep_after(self, seconds: float):
+        """Idle seconds before he lies down. 0 disables napping."""
+        _on_main(lambda: setattr(self.view, "_sleep_after", max(0.0, seconds)))
 
     def show_threadsafe(self):
         _on_main(self.show)
