@@ -72,17 +72,18 @@ _FPS_BATTERY = {
 }
 _FPS_PLUGGED = {
     "talking": 30.0,
-    "listening": 20.0,
-    "thinking": 20.0,
-    "idle": 1.0,
-    "sleeping": 0.5,
+    "listening": 30.0,
+    "thinking": 30.0,
+    "idle": 30.0,        # fully animated — there is no battery to protect
+    "sleeping": 12.0,    # slow breathing
 }
 
 # While a blink is in progress the rate jumps to this, whatever the state, so
 # the eyes close smoothly instead of snapping shut.
 _BLINK_FPS = 20.0
 
-# States that hold a fixed pose, so a tick with no blink can skip the redraw.
+# States that hold a fixed pose *on battery*, so a tick with no blink can skip
+# the redraw entirely. On wall power these animate normally.
 _STATIC_STATES = ("idle", "sleeping")
 
 # How often to re-ask the OS about the power source, in seconds.
@@ -174,6 +175,11 @@ class BuddyView(NSView):
         return self._state
 
     @objc.python_method
+    def _pose_is_fixed(self) -> bool:
+        """True when the current pose won't change, so a redraw is pointless."""
+        return self._state in _STATIC_STATES and not self._on_ac
+
+    @objc.python_method
     def desired_interval(self) -> float:
         """Seconds between frames for the current state and power source."""
         if self._blink > 0.01:
@@ -258,7 +264,7 @@ class BuddyView(NSView):
         if blinking != self._was_blinking:
             self._was_blinking = blinking
             self._retime()          # burst for the blink, then back down
-        if self._state not in _STATIC_STATES or blinking or self._text:
+        if not self._pose_is_fixed() or blinking or self._text:
             self.setNeedsDisplay_(True)
 
     # -- geometry -------------------------------------------------------------
@@ -267,11 +273,19 @@ class BuddyView(NSView):
         """Return (dx, dy, lean, squash) for the current state and time."""
         t = self._t
         if self._state == "idle":
-            # Deliberately motionless. Live animation in a transparent
-            # always-on-top window costs ~8% of a CPU core continuously, which
-            # is not a fair price for a sway nobody is watching. He still
-            # blinks, and comes fully alive the moment he has something to do.
-            return (0.0, 0.0, 0.0, 1.0)
+            if not self._on_ac:
+                # On battery, hold still. Animating a transparent always-on-top
+                # window costs ~8% of a CPU core continuously — not a fair price
+                # for a sway nobody is watching. He still blinks, and comes
+                # fully alive the moment he has something to do.
+                return (0.0, 0.0, 0.0, 1.0)
+            # Plugged in there is nothing to save, so he breathes: a slow sway
+            # with a second, slower component so the motion never looks like a
+            # loop, plus a gentle bob.
+            return (math.sin(t * 0.9) * 3.4 + math.sin(t * 0.37) * 1.6,
+                    math.sin(t * 1.7) * 1.8,
+                    math.sin(t * 0.9) * 0.045,
+                    1.0 + math.sin(t * 1.7) * 0.012)
         if self._state == "listening":
             # Leans toward the user and holds still, so it reads as attentive.
             return (0.0, 2.0 + math.sin(t * 3.0) * 1.5, 0.16, 1.0)
@@ -281,7 +295,9 @@ class BuddyView(NSView):
             bob = abs(math.sin(t * 7.5))
             return (math.sin(t * 3.1) * 2.0, bob * 5.0, math.sin(t * 3.1) * 0.05,
                     1.0 - bob * 0.05)
-        # sleeping — slow breathing
+        # sleeping — slow breathing (still, on battery)
+        if not self._on_ac:
+            return (0.0, 0.0, -0.22, 1.0)
         return (0.0, math.sin(t * 0.9) * 2.0, -0.22, 1.0 + math.sin(t * 0.9) * 0.02)
 
     # -- drawing --------------------------------------------------------------

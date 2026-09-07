@@ -31,9 +31,11 @@ _DEFAULT_RATE = 175
 # the best installed voice so Prowl improves the moment one is downloaded.
 #
 # Ordered by how natural they sound conversationally; the first installed wins.
+# Order only decides the "auto" pick when several are installed; an explicit
+# tts_voice always wins. Listed male-first because he is called Bob by default.
 _PREFERRED = (
+    "Nathan", "Tom", "Evan", "Aaron", "Daniel",
     "Ava", "Zoe", "Allison", "Susan", "Samantha", "Joelle",
-    "Tom", "Evan", "Nathan", "Noelle", "Serena", "Stephanie",
 )
 
 # Hard cap so a runaway `say` (e.g. a very long paragraph) can't block forever.
@@ -142,10 +144,21 @@ def _settings(cfg: Any) -> tuple[str, int]:
     if not isinstance(voice, str):
         voice = _DEFAULT_VOICE
     # "auto" (the default) tracks the best voice actually installed, so
-    # downloading a Premium voice improves Prowl with no config change.
+    # downloading a Premium voice improves things with no config change.
     if voice.strip().lower() in ("", "auto", "best"):
-        voice = best_voice() or _DEFAULT_VOICE
-    return voice, rate
+        return best_voice() or _DEFAULT_VOICE, rate
+
+    # A named voice that isn't installed makes `say` fail silently — no speech
+    # at all, which looks like the whole assistant is broken. Fall back to the
+    # best installed voice instead, and accept a bare name ("Nathan") for a
+    # qualified one ("Nathan (Enhanced)").
+    installed = {name for name, _ in list_voices()}
+    if voice in installed:
+        return voice, rate
+    for name in installed:
+        if name.lower().startswith(voice.strip().lower() + " ("):
+            return name, rate
+    return best_voice() or _DEFAULT_VOICE, rate
 
 
 def _build_cmd(text: str, cfg: Any) -> list[str]:
