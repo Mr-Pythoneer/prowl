@@ -1,6 +1,14 @@
 // prowl-listen: on-device speech-to-text helper for Prowl.
 //
-// Usage: prowl-listen [maxSeconds] [locale]   (defaults: 12, "en-US")
+// Usage: prowl-listen [maxSeconds] [locale] [outputFile]
+//        (defaults: 12, "en-US", stdout)
+//
+// When outputFile is given the transcript is written there as well as to
+// stdout. That exists so the app can be started through LaunchServices
+// (`open -a ProwlListen.app`), which is the only way macOS treats it as its own
+// TCC identity — launched as a plain child process, the microphone permission
+// belongs to whichever process happened to be the parent (Terminal, Python,
+// a menu-bar app), so it works from one and is killed from another.
 //
 // Captures the default input device, runs offline SFSpeechRecognizer with
 // requiresOnDeviceRecognition, streams partial results, and prints only the
@@ -26,6 +34,18 @@ let maxSeconds: Double = {
     return v
 }()
 let localeID: String = (args.count > 2 && !args[2].isEmpty) ? args[2] : "en-US"
+// Optional file to also write the result to (see the note at the top).
+let outputPath: String? = (args.count > 3 && !args[3].isEmpty) ? args[3] : nil
+
+// Write `text` to outputPath, if one was given. Failures are ignored: stdout
+// is still authoritative when the caller can read it.
+func writeOutput(_ text: String, code: Int32) {
+    guard let path = outputPath else { return }
+    // The exit code goes on the first line so a caller reading only the file
+    // can still tell success from failure.
+    let payload = "\(code)\n" + text + "\n"
+    try? payload.write(toFile: path, atomically: true, encoding: .utf8)
+}
 
 // Time of silence (after speech began) that triggers a stop.
 let silenceTimeout: Double = 1.5
@@ -74,12 +94,14 @@ guard speechStatus == .authorized else {
     default:
         err("prowl-listen: speech recognition not authorized.")
     }
+    writeOutput("", code: 2)
     exit(2)
 }
 
 guard requestMicAuth() else {
     err("prowl-listen: microphone access denied. Grant it in "
         + "System Settings > Privacy & Security > Microphone.")
+    writeOutput("", code: 3)
     exit(3)
 }
 
@@ -87,10 +109,12 @@ guard requestMicAuth() else {
 
 guard let recognizer = SFSpeechRecognizer(locale: Locale(identifier: localeID)) else {
     err("prowl-listen: no recognizer available for locale '\(localeID)'.")
+    writeOutput("", code: 4)
     exit(4)
 }
 guard recognizer.isAvailable else {
     err("prowl-listen: recognizer for '\(localeID)' is not available right now.")
+    writeOutput("", code: 4)
     exit(4)
 }
 
@@ -191,6 +215,7 @@ let inputNode = engine.inputNode
 let format = inputNode.outputFormat(forBus: 0)
 guard format.channelCount > 0 else {
     err("prowl-listen: no audio input available.")
+    writeOutput("", code: 6)
     exit(6)
 }
 
@@ -203,6 +228,7 @@ do {
     try engine.start()
 } catch {
     err("prowl-listen: could not start audio engine: \(error.localizedDescription)")
+    writeOutput("", code: 6)
     exit(6)
 }
 err("prowl-listen: listening for up to \(Int(maxSeconds))s (locale \(localeID))...")
@@ -229,6 +255,7 @@ let (finalText, finalCode): (String, Int32) = stateQueue.sync {
     (bestTranscript.trimmingCharacters(in: .whitespacesAndNewlines), exitCode)
 }
 
+writeOutput(finalCode == 0 ? finalText : "", code: finalCode)
 if finalCode == 0 {
     // Only the transcript goes to stdout.
     print(finalText)

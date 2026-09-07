@@ -13,6 +13,7 @@ Public API::
 """
 from __future__ import annotations
 
+import re
 import subprocess
 import threading
 from functools import lru_cache
@@ -41,6 +42,36 @@ _SPEAK_TIMEOUT = 120
 # The most recently spawned async process, so stop() can kill it.
 _proc: subprocess.Popen[bytes] | None = None
 _lock = threading.Lock()
+
+
+# Escalated answers come back as markdown, and `say` reads the punctuation out
+# loud ("asterisk asterisk thirty Python files"). Strip the markup to what a
+# person would actually say.
+_MD_PATTERNS = (
+    (re.compile(r"```.*?```", re.S), " "),            # fenced code blocks
+    (re.compile(r"`([^`]*)`"), r"\1"),                # inline code
+    (re.compile(r"!\[[^\]]*\]\([^)]*\)"), " "),        # images
+    (re.compile(r"\[([^\]]+)\]\([^)]*\)"), r"\1"),    # links -> link text
+    (re.compile(r"(\*\*|__)(.+?)\1", re.S), r"\2"),   # bold
+    (re.compile(r"(?<![\w*])[*_](?!\s)(.+?)(?<!\s)[*_](?![\w*])", re.S), r"\1"),  # italics
+    (re.compile(r"^\s{0,3}#{1,6}\s*", re.M), ""),     # headings
+    (re.compile(r"^\s{0,3}[-*+]\s+", re.M), ""),      # bullets
+    (re.compile(r"^\s{0,3}>\s?", re.M), ""),          # block quotes
+    (re.compile(r"^\s*\|.*\|\s*$", re.M), " "),        # table rows
+    (re.compile(r"^\s*[-=]{3,}\s*$", re.M), " "),      # rules
+)
+
+
+def for_speech(text: str) -> str:
+    """Reduce markdown to plain prose suitable for a speech synthesizer."""
+    out = text or ""
+    for pattern, repl in _MD_PATTERNS:
+        out = pattern.sub(repl, out)
+    # Collapse the whitespace the substitutions leave behind.
+    out = re.sub(r"[ \t]+", " ", out)
+    out = re.sub(r"\n{2,}", ". ", out)
+    out = out.replace("\n", " ")
+    return re.sub(r"\s+", " ", out).strip()
 
 
 @lru_cache(maxsize=4)
@@ -121,7 +152,7 @@ def _build_cmd(text: str, cfg: Any) -> list[str]:
     cmd = ["say"]
     if voice:
         cmd += ["-v", voice]
-    cmd += ["-r", str(rate), text]
+    cmd += ["-r", str(rate), for_speech(text)]
     return cmd
 
 

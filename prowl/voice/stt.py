@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 # Extra wall-clock slack over the helper's own capture cap, to allow for
@@ -45,6 +46,11 @@ def _coerce_seconds(value) -> int:
     except (TypeError, ValueError):
         seconds = _DEFAULT_SECONDS
     return max(_MIN_SECONDS, min(_MAX_SECONDS, seconds))
+
+
+def app_path() -> Path:
+    """Path to the ProwlListen.app bundle (may not exist on an old build)."""
+    return Path(__file__).resolve().parent.parent / "helpers" / "ProwlListen.app"
 
 
 def helper_path() -> Path:
@@ -100,11 +106,74 @@ def listen_once_ex(cfg) -> tuple[str, str]:
     prints the final transcript to stdout (status/errors go to stderr) and exits
     0 on success. Never raises.
     """
-    path = helper_path()
     max_seconds = _coerce_seconds(cfg.get("stt_max_seconds", _DEFAULT_SECONDS))
     locale = str(cfg.get("stt_locale", "en-US") or "en-US")
-    cmd = [str(path), str(max_seconds), locale]
 
+    app = app_path()
+    if app.is_dir():
+        return _listen_via_launch_services(app, max_seconds, locale)
+    return _listen_direct(helper_path(), max_seconds, locale)
+
+
+def _listen_via_launch_services(app: Path, max_seconds: int, locale: str) -> tuple[str, str]:
+    """Run the helper through ``open``, so TCC sees ProwlListen.app itself.
+
+    Launched as an ordinary child process, the microphone permission belongs to
+    whatever started Prowl — a Terminal that has been granted access works, and
+    the same code run from the menu-bar app is killed. Going through
+    LaunchServices makes the bundle its own responsible process, so one grant
+    covers every front-end. ``open`` gives us no stdout, hence the temp file.
+    """
+    tmp = tempfile.NamedTemporaryFile(prefix="prowl-stt-", suffix=".txt", delete=False)
+    tmp.close()
+    out_file = Path(tmp.name)
+    cmd = [
+        "open", "-W", "-n", "-a", str(app),
+        "--args", str(max_seconds), locale, str(out_file),
+    ]
+    try:
+        subprocess.run(
+            cmd, capture_output=True, text=True,
+            timeout=max_seconds + _TIMEOUT_SLACK,
+        )
+    except FileNotFoundError:
+        out_file.unlink(missing_ok=True)
+        return "", _BUILD_HINT
+    except subprocess.TimeoutExpired:
+        out_file.unlink(missing_ok=True)
+        return "", "The microphone didn't respond in time."
+    except OSError as exc:
+        out_file.unlink(missing_ok=True)
+        return "", f"Couldn't run the speech helper ({exc})."
+
+    try:
+        raw = out_file.read_text()
+    except OSError:
+        raw = ""
+    finally:
+        out_file.unlink(missing_ok=True)
+
+    if not raw.strip():
+        # The app never wrote anything: it was killed before it could report,
+        # which in practice means the permission prompt was never answered.
+        return "", ("I couldn't reach the microphone. Grant Prowl access under "
+                    "System Settings → Privacy & Security → Microphone and "
+                    "Speech Recognition.")
+    first, _, body = raw.partition("\n")
+    try:
+        code = int(first.strip())
+    except ValueError:
+        return body.strip(), ""
+    if code != 0:
+        return "", _EXIT_REASONS.get(
+            code, f"The speech helper exited with code {code}."
+        )
+    return body.strip(), ""
+
+
+def _listen_direct(path: Path, max_seconds: int, locale: str) -> tuple[str, str]:
+    """Run the helper binary directly (pre-bundle builds)."""
+    cmd = [str(path), str(max_seconds), locale]
     try:
         proc = subprocess.run(
             cmd,
