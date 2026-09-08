@@ -129,6 +129,9 @@ class Orchestrator:
         self._last_skill: str | None = None
         self._last_args: dict[str, Any] = {}
         self._last_app: str = ""
+        # When set, replaces the chat system prompt entirely — used by moods,
+        # which need to change his register rather than append to it.
+        self.persona: str = ""
 
     def handle(self, utterance: str, ctx: Context) -> SkillResult:
         utterance = (utterance or "").strip()
@@ -194,7 +197,10 @@ class Orchestrator:
             ctx.speak(decision.reply)
             return SkillResult.say(decision.reply)
         try:
-            answer = self.local.reply(utterance)
+            if self.persona:
+                answer = self.local.chat(self.persona, utterance, temperature=0.85)
+            else:
+                answer = self.local.reply(utterance)
         except BrainError as exc:
             msg = ("I can't reach a model right now — no cloud connection, and "
                    "Ollama isn't running locally.")

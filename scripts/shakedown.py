@@ -196,6 +196,17 @@ CONTROL_CASES: list[tuple[str, str | None]] = [
     ("show me the details", "details"),
     ("what did you find", "details"),
     ("copy that", "copy"),
+    # the mood switch
+    ("AI's or Humans?", "evil"),
+    ("ai or humans", "evil"),
+    ("robots or people", "evil"),
+    ("machines versus mankind", "evil"),
+    ("wat", "wat"),
+    ("snap out of it", "wat"),
+    ("are you okay", "wat"),
+    # ...but these are not the provocation
+    ("what do you think about ai", None),
+    ("ai stuff", None),
     ("put that on my clipboard", "copy"),
     # Must stay with the router / skills.
     ("stop the music", None),

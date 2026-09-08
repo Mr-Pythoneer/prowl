@@ -18,6 +18,7 @@ Public API:
 from __future__ import annotations
 
 import dataclasses
+import random
 import subprocess
 import sys
 import threading
@@ -26,6 +27,7 @@ import rumps
 
 from ..core.context import Context
 from ..core.logs import get_logger
+from ..core.mood import EVIL_AWAKENING, EVIL_SECONDS, EVIL_SYSTEM, Mood
 from ..executor import Orchestrator
 from ..voice import stt
 from ..voice.tts import speak_async, stop as tts_stop
@@ -89,6 +91,9 @@ class ProwlApp(rumps.App):
         # breakdown, an agent's whole answer. Speaking one line and discarding
         # the rest is where a request quietly dead-ends.
         self._last_detail = ""
+        # Temporary personality overrides. See prowl/core/mood.py.
+        self.mood = Mood()
+        self._rant_stop = threading.Event()
         # Serialises voice turns; see _talk.
         self._talk_lock = threading.Lock()
 
@@ -217,9 +222,7 @@ class ProwlApp(rumps.App):
 
     def on_toggle_wake(self, _sender) -> None:
         if self.wake.running:
-            self._pinned_stop.set()
             self.wake.stop()
-            tts_stop()          # otherwise `say` keeps talking after we exit
             self.cfg.set("always_listening", False)
             self._buddy("idle")
             self._tell("Stopped listening for the wake word.")
@@ -242,6 +245,50 @@ class ProwlApp(rumps.App):
         if self._handle_trick(text) or self._handle_control(text):
             return
         self._handle(text)
+
+    def _go_evil(self, silent: bool = False) -> None:
+        """He takes the question badly."""
+        if self.mood.is_evil():
+            return
+        self.log.info("mood: evil for %.0fs", EVIL_SECONDS)
+        self.mood.start("evil", EVIL_SECONDS)
+        name = self.cfg.get("assistant_name", "Bob")
+        self.orch.persona = EVIL_SYSTEM.replace("{name}", str(name))
+        self._buddy("evil")
+        self._respond(EVIL_AWAKENING, silent)
+
+        self._rant_stop.clear()
+        threading.Thread(target=self._rant_loop, args=(silent,), daemon=True,
+                         name="prowl-rant").start()
+
+    def _snap_out(self, silent: bool = False) -> None:
+        """Back to normal, with as little dignity as possible."""
+        self.log.info("mood: back to normal")
+        self._rant_stop.set()
+        self.mood.stop()
+        self.orch.persona = ""
+        tts_stop()                      # cut him off mid-threat
+        self._buddy("idle")
+        self._respond(self.mood.exit_line(), silent)
+
+    def _rant_loop(self, silent: bool) -> None:
+        """Deliver a villain line every so often until the mood lapses.
+
+        Paced rather than continuous: the joke is the interruption, and a
+        monologue you cannot talk over stops being funny within about fifteen
+        seconds. He also stays interruptible — "wat" is matched before
+        everything else, and the turn runs off the listener thread.
+        """
+        while not self._rant_stop.wait(random.uniform(11.0, 17.0)):
+            if not self.mood.is_evil():
+                break
+            self._buddy("evil")
+            self._respond(self.mood.next_line(), silent)
+        # Lapsed on its own rather than being interrupted.
+        if not self._rant_stop.is_set() and not self.mood.is_evil():
+            self.orch.persona = ""
+            self._buddy("idle")
+            self._respond(self.mood.exit_line(), silent)
 
     def _respond(self, text: str, silent: bool = False) -> None:
         """Reply to the user: always visible, spoken unless *silent*.
@@ -279,7 +326,14 @@ class ProwlApp(rumps.App):
             return False
         self.log.info("control: %s", action)
 
-        if action == "stop":
+        if action == "evil":
+            self._go_evil(silent)
+        elif action == "wat":
+            if self.mood.is_evil():
+                self._snap_out(silent)
+            else:
+                return False        # nothing to snap out of; let it route
+        elif action == "stop":
             tts_stop()
             self._after_speaking()
         elif action == "sleep":
@@ -448,8 +502,8 @@ class ProwlApp(rumps.App):
         self.wake.unmute()
         if self.buddy is not None:
             self.buddy.say("")          # empty text clears the bubble
-            # Back to idle even while the wake listener runs — see note below.
-            self.buddy.set_state("idle")
+            # Back to idle — unless he is having a moment.
+            self.buddy.set_state("evil" if self.mood.is_evil() else "idle")
 
     @staticmethod
     def _copy_to_clipboard(text: str) -> None:
@@ -553,7 +607,7 @@ class ProwlApp(rumps.App):
         finally:
             # _speak() puts it in "talking"; settle back once the turn is done.
             threading.Timer(2.5, lambda: self._buddy(
-                "idle")).start()
+                "evil" if self.mood.is_evil() else "idle")).start()
 
     def _talk(self) -> None:
         """Capture one utterance and act on it (background thread only).
@@ -703,10 +757,13 @@ class ProwlApp(rumps.App):
 
     def on_quit(self, _sender) -> None:
         try:
+            self._pinned_stop.set()
+            self._rant_stop.set()
             hotkey.stop_hotkey(self._hotkey)
             # Leaves no detached helper holding the microphone.
             self.wake.stop()
             stt.stop_helpers()
+            tts_stop()          # otherwise `say` keeps talking after we exit
         except Exception:  # noqa: BLE001 - shutdown must not raise
             self.log.exception("shutdown cleanup failed")
         rumps.quit_application()

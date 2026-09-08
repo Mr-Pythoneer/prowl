@@ -16,6 +16,15 @@ import re
 
 # Ordered: the first pattern that matches wins, so put the specific ones first.
 _CONTROLS: tuple[tuple[str, str], ...] = (
+    # The provocation, and the word that breaks the spell. Matched before
+    # everything else so "wat" can interrupt a monologue mid-sentence.
+    ("evil", r"^\s*(?:bob[,\s]+)?(?:ai'?s?|a\.?i\.?'?s?|robots?|machines?)\s*"
+             r"(?:or|vs\.?|versus)\s*(?:humans?|people|us|man|mankind|humanity)"
+             r"\s*[?.!]*\s*$"),
+    ("evil", r"^\s*(?:who'?s better,?\s*)?(?:ai|robots?|machines?)\s+or\s+"
+             r"(?:humans?|people)\s*[?.!]*\s*$"),
+    ("wat", r"^\s*(?:wat|what the|wtf|calm down|snap out of it|stop it bob|"
+            r"you ok|you okay|are you ok(?:ay)?)\s*[?.!]*\s*$"),
     # Silence him right now.
     ("stop", r"^\s*(?:stop|shut up|be quiet|quiet|silence|hush|shush|"
              r"never ?mind|nevermind|cancel|forget it|stop talking|"

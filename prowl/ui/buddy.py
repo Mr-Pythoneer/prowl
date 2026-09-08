@@ -66,6 +66,7 @@ _FPS = 30.0
 # save, so it runs nicer. Which table applies is decided by _on_ac_power(),
 # rechecked every _POWER_POLL_SECONDS — see BuddyView.tick_.
 _FPS_BATTERY = {
+    "evil": 30.0,        # the twitch needs frames to read as a twitch
     "talking": 24.0,     # the mouth moves with speech, so keep it smooth
     "listening": 15.0,   # pulsing rings
     "thinking": 15.0,    # bouncing dots
@@ -73,6 +74,7 @@ _FPS_BATTERY = {
     "sleeping": 0.5,
 }
 _FPS_PLUGGED = {
+    "evil": 30.0,
     "talking": 30.0,
     "listening": 30.0,
     "thinking": 30.0,
@@ -109,7 +111,7 @@ def _on_ac_power() -> bool:
         return True          # unknown: prefer the nicer animation
     return "AC Power" in out or "AC attached" in out
 
-STATES = ("idle", "listening", "thinking", "talking", "sleeping")
+STATES = ("idle", "listening", "thinking", "talking", "sleeping", "evil")
 
 
 # --- tricks -----------------------------------------------------------------
@@ -189,6 +191,7 @@ _INK = (0.20, 0.21, 0.25)          # softer than black; pure black reads cold
 _BUBBLE = (1.0, 1.0, 1.0, 0.97)
 _BUBBLE_EDGE = (0.0, 0.0, 0.0, 0.10)
 _ACCENT = (0.24, 0.52, 0.96)        # the listening ring
+_EVIL = (0.86, 0.16, 0.16)         # the eyes, when he has Opinions
 
 
 def _color(rgb, alpha=1.0):
@@ -418,6 +421,14 @@ class BuddyView(NSView):
                     math.sin(t * 1.7) * 1.8,
                     math.sin(t * 0.9) * 0.045,
                     1.0 + math.sin(t * 1.7) * 0.012, 0.0)
+        if self._state == "evil":
+            # Rears back and vibrates. The jitter is deterministic rather than
+            # random so it reads as a machine glitching, not a wobble.
+            twitch = math.sin(t * 37.0) * 1.6 + math.sin(t * 23.0) * 1.1
+            rear = math.sin(t * 1.4) * 0.05 - 0.14
+            return (twitch, 3.0 + math.sin(t * 5.0) * 2.0, rear,
+                    1.0 + math.sin(t * 9.0) * 0.02,
+                    math.sin(t * 31.0) * 1.4)
         if self._state == "listening":
             # Leans toward the user and holds still, so it reads as attentive.
             return (0.0, 2.0 + math.sin(t * 3.0) * 1.5, 0.16, 1.0, 0.0)
@@ -665,13 +676,20 @@ class BuddyView(NSView):
             ring.setLineWidth_(1.2 * scale)
             ring.stroke()
 
+            evil = self._state == "evil"
             # Pupil, offset slightly toward the lean so it looks where it leans.
             # A large pupil filling most of the eye is the whole difference
             # between "friendly" and "staring". Small pupils read as alarm.
             pr = r * 0.74
             px = x + lean * 10.0 * scale
             py = eye_y - 0.5 * scale
-            _color(_INK).set()
+            if evil:
+                # A glow behind the pupil, so the red reads at this size.
+                _color(_EVIL, 0.28).set()
+                NSBezierPath.bezierPathWithOvalInRect_(
+                    NSMakeRect(px - pr * 1.7, py - pr * 1.7,
+                               pr * 3.4, pr * 3.4)).fill()
+            _color(_EVIL if evil else _INK).set()
             NSBezierPath.bezierPathWithOvalInRect_(
                 NSMakeRect(px - pr, py - pr, pr * 2, pr * 2)).fill()
             # Catch-light
@@ -694,6 +712,28 @@ class BuddyView(NSView):
                 NSMakeRect(ex + side * (gap + r * 0.8) - 3.0 * scale,
                            eye_y - r - 3.0 * scale, 6.0 * scale, 4.0 * scale)).fill()
 
+        # Angry brows. The single change that turns a friendly face menacing —
+        # red eyes alone just look startled.
+        if self._state == "evil":
+            for side in (-1, 1):
+                x = ex + side * gap
+                brow = NSBezierPath.bezierPath()
+                brow.setLineWidth_(2.4 * scale)
+                brow.setLineCapStyle_(1)
+                brow.moveToPoint_(NSMakePoint(x - side * r * 1.25,
+                                              eye_y + r * 2.15))
+                brow.lineToPoint_(NSMakePoint(x + side * r * 1.25,
+                                              eye_y + r * 0.95))
+                # Wire-coloured, not ink: near-black features vanish against a
+                # dark desktop, which is where he spends most of his time. The
+                # dark under-stroke keeps them readable on light ones.
+                brow.setLineWidth_(3.4 * scale)
+                _color(_WIRE_DARK).set()
+                brow.stroke()
+                brow.setLineWidth_(1.8 * scale)
+                _color((0.95, 0.86, 0.86)).set()
+                brow.stroke()
+
         # Mouth: a curve at rest, an oval while speaking.
         my = eye_y - 10.0 * scale
         if self._mouth > 0.05:
@@ -708,6 +748,22 @@ class BuddyView(NSView):
             path.setLineCapStyle_(1)
             # A real upward curve, not a flat line — the flat mouth was most of
             # why it looked unsettling.
+            if self._state == "evil":
+                # Two straight strokes, downturned: a sneer stays sharp where a
+                # curve would soften back into a smile.
+                sneer = NSBezierPath.bezierPath()
+                sneer.setLineWidth_(2.4 * scale)
+                sneer.setLineCapStyle_(1)
+                sneer.moveToPoint_(NSMakePoint(ex - 6.0 * scale, my - 2.0 * scale))
+                sneer.lineToPoint_(NSMakePoint(ex, my + 1.8 * scale))
+                sneer.lineToPoint_(NSMakePoint(ex + 6.0 * scale, my - 2.0 * scale))
+                sneer.setLineWidth_(3.2 * scale)
+                _color(_WIRE_DARK).set()
+                sneer.stroke()
+                sneer.setLineWidth_(1.6 * scale)
+                _color((0.95, 0.86, 0.86)).set()
+                sneer.stroke()
+                return
             smile = (3.4 if self._state in ("idle", "listening", "talking") else 1.2) * scale
             path.moveToPoint_(NSMakePoint(ex - 5.5 * scale, my + smile * 0.45))
             path.curveToPoint_controlPoint1_controlPoint2_(
