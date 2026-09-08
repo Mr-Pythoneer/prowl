@@ -106,6 +106,19 @@ class Orchestrator:
         if not self.escalator.enabled:
             # Escalation is off (offline mode, or no backend configured).
             return self._offline_fallback(utterance, ctx)
+
+        # Escalation hands the raw sentence to an agent with shell access, so it
+        # is at least as dangerous as any skill marked destructive — and the
+        # router deliberately sends destructive phrasings here (see
+        # Router._MANAGES_FILES), which made this the one path where "delete my
+        # old documents" reached a shell with nothing asked first.
+        if self.cfg.confirm_destructive and not ctx.dry_run:
+            if not ctx.confirm(
+                    f"Hand this to the agent? It can run commands.\n\n{utterance}"):
+                msg = "Okay, cancelled — nothing was sent."
+                ctx.speak(msg)
+                return SkillResult.fail(msg)
+
         ctx.speak("On it — this one needs the smart agent, give me a moment.")
         try:
             answer = self.escalator.run(utterance)

@@ -92,7 +92,9 @@ class RunShell(Skill):
     def confirm_prompt(self, args: dict) -> str | None:
         """Show the exact command so the user approves what actually runs."""
         command = str(args.get("command") or args.get("cmd") or "").strip()
-        return f"Run this command?\n\n{command}" if command else None
+        # The dialog flattens newlines (hud._escape), so use a visible
+        # separator instead — the whole point is that the command is readable.
+        return f"Run this command?   →   {command}" if command else None
 
     def run(self, args: dict, ctx: Context) -> SkillResult:
         if not ctx.config.get("shell_skill_enabled", True):

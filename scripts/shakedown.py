@@ -127,6 +127,123 @@ SKILL_ARGS: dict[str, dict] = {
 }
 
 
+# (utterance, expected trick or None). Tricks bypass the router entirely, so
+# they need their own corpus — the routing set above would never exercise them.
+TRICK_CASES: list[tuple[str, str | None]] = [
+    ("do a backflip", "backflip"),
+    ("backflip", "backflip"),
+    ("do a barrel roll", "tumble"),
+    ("do as barrel row", "tumble"),          # how it actually gets transcribed
+    ("do a 360", "spin"),
+    ("spin around", "spin"),
+    ("jump", "jump"),
+    ("dance", "dance"),
+    ("wave", "wave"),
+    ("nod", "nod"),
+    ("shrug", "shrug"),
+    ("stretch", "stretch"),
+    ("cheer", "cheer"),
+    ("wobble", "wobble"),
+    # Must NOT be stolen from the router.
+    ("jump to the next song", None),
+    ("open safari", None),
+    ("dance music playlist", None),
+    ("stop", None),
+]
+
+# (utterance, expected control action or None).
+CONTROL_CASES: list[tuple[str, str | None]] = [
+    ("stop", "stop"),
+    ("shut up", "stop"),
+    ("never mind", "stop"),
+    ("cancel", "stop"),
+    ("stop listening", "sleep"),
+    ("take a break", "sleep"),
+    ("wake up", "wake"),
+    ("hide", "hide"),
+    ("come back", "show"),
+    ("say that again", "repeat"),
+    ("what can you do", "help"),
+    # Must stay with the router / skills.
+    ("stop the music", None),
+    ("go to sleep", None),                   # means sleep the Mac
+    ("open safari", None),
+    ("hide my downloads folder", None),
+]
+
+# (utterance, should it wake him?) — the wake matcher, which gates everything.
+WAKE_CASES: list[tuple[str, bool]] = [
+    ("hey bob", True),
+    ("hey bob open safari", True),
+    ("ok bob what time is it", True),
+    ("bob", True),
+    ("bob open safari", True),               # bare name + safe command
+    ("bob turn it up", True),
+    # Overheard conversation must never wake him.
+    ("Bob was asking about it", False),
+    ("I told bob about it", False),
+    ("the bobcat ran", False),
+    ("bobbing along", False),
+    # Bare name must not carry a destructive command.
+    ("bob delete my documents", False),
+    ("bob quit safari", False),
+]
+
+
+def run_tricks() -> list[str]:
+    from prowl.ui.buddy import match_trick
+
+    failures = []
+    print(f"\n{DIM}── tricks ──{RESET}")
+    for utterance, expected in TRICK_CASES:
+        got = match_trick(utterance)
+        ok = got == expected
+        if not ok:
+            failures.append(f"trick {utterance!r}: expected {expected}, got {got}")
+        mark = f"{GREEN}ok{RESET}" if ok else f"{RED}FAIL{RESET}"
+        print(f"  {mark}  {DIM}{utterance!r} -> {got}{RESET}")
+    return failures
+
+
+def run_controls() -> list[str]:
+    from prowl.voice.control import match_control
+
+    failures = []
+    print(f"\n{DIM}── control phrases ──{RESET}")
+    for utterance, expected in CONTROL_CASES:
+        got = match_control(utterance)
+        ok = got == expected
+        if not ok:
+            failures.append(f"control {utterance!r}: expected {expected}, got {got}")
+        mark = f"{GREEN}ok{RESET}" if ok else f"{RED}FAIL{RESET}"
+        print(f"  {mark}  {DIM}{utterance!r} -> {got}{RESET}")
+    return failures
+
+
+def run_wake() -> list[str]:
+    from prowl.core.config import Config
+    from prowl.voice.wake import WakeListener
+
+    failures = []
+    print(f"\n{DIM}── wake word ──{RESET}")
+    listener = WakeListener(Config.load())
+    strict, loose = listener._pattern(), listener._loose_pattern()
+    for utterance, expected in WAKE_CASES:
+        if strict.search(utterance):
+            got = True
+        else:
+            m = loose.search(utterance)
+            got = bool(m and listener._safe_bare_command(m.group(1)))
+        ok = got == expected
+        if not ok:
+            failures.append(
+                f"wake {utterance!r}: expected {'wake' if expected else 'ignore'}")
+        mark = f"{GREEN}ok{RESET}" if ok else f"{RED}FAIL{RESET}"
+        print(f"  {mark}  {DIM}{utterance!r} -> "
+              f"{'wake' if got else 'ignore'}{RESET}")
+    return failures
+
+
 def run_routing(full: bool) -> list[str]:
     failures = []
     print(f"\n{DIM}── routing ──{RESET}")
@@ -203,7 +320,9 @@ def main() -> int:
     args = ap.parse_args()
     logging.basicConfig(level=logging.CRITICAL)
 
-    failures = run_routing(args.full) + run_skills()
+    skills_pkg.load_all()          # wake checks consult the skill registry
+    failures = (run_routing(args.full) + run_tricks() + run_controls()
+                + run_wake() + run_skills())
 
     print(f"\n{DIM}── summary ──{RESET}")
     if failures:

@@ -20,9 +20,9 @@ block. This is also why typed tricks appeared to do nothing.
 
 ---
 
-## Tier 1 — critical and cheap. Do these first.
+## Tier 1 — DONE (2026-09-08)
 
-**1.1 — Escalation runs with no confirmation at all. XS**
+**1.1 — ✅ Escalation runs with no confirmation at all. XS**
 `prowl/executor.py` `_escalate`. Destructive *skills* are gated by
 `Executor.run_skill`; escalation isn't gated by anything — it goes straight from
 a spoken sentence to `claude -p` with shell access. Worse, the router
@@ -31,22 +31,22 @@ deliberately sends destructive phrasings there: `_MANAGES_FILES` matches
 the most dangerous verbs are the ones that skip the gate. Four lines: call
 `ctx.confirm` before `self.escalator.run`.
 
-**1.2 — A brain failure escalates *everything*. XS**
+**1.2 — ✅ A brain failure escalates *everything*. XS**
 `prowl/brain/router.py` (~line 96). If `Brain.chat` raises `BrainError` — Ollama
 down *and* the cloud key rejected — every utterance becomes an agent turn. This
 should fail closed: answer "my brain is offline", never escalate.
 
-**1.3 — The confirmation dialog defaults to Yes. XS**
+**1.3 — ✅ The confirmation dialog defaults to Yes. XS**
 `prowl/ui/menubar.py` `_confirm`. `default button "Yes"` means Return approves
 an arbitrary shell command. One word change to `"No"`, plus `with icon caution`.
 
-**1.4 — Wake word fires on any sentence starting with "Bob". S**
+**1.4 — ✅ Wake word fires on any sentence starting with "Bob". S**
 `prowl/voice/wake.py`. `_PREFIX` is optional, so "Bob was asking about it" wakes
 him, arms a 12-second window, and the *next* thing said in the room is executed
 as a command. Require the address form ("hey/ok bob"), cut the arm window to
 ~5s, and require the wake word in the same line for anything that would escalate.
 
-**1.5 — Trick/control regressions are invisible to the test suite. S**
+**1.5 — ✅ Trick/control regressions are invisible to the test suite. S**
 `scripts/shakedown.py` covers all 20 skills and 54 routing cases but **zero** of
 the 12 tricks and 7 control phrases — exactly where the last week's bugs lived,
 including 0.1 above. Add both to the corpus.
@@ -166,8 +166,8 @@ privacy artifact.
 
 ## Suggested order
 
-1. **Tier 1 entire** — roughly two hours, and it closes every path where a
-   misheard sentence reaches an unconfirmed agent.
+1. ~~Tier 1 entire~~ — **done**. Every path where a misheard sentence could
+   reach an unconfirmed agent is now closed.
 2. **3.1, 3.3, 4.1, 4.6, 4.7** — a batch of small wins: he survives reboot, can
    tell the time, stops burning a tenth of a core, and stops lying in the README.
 3. **2.1** — the shell allowlist. The single biggest reduction in blast radius.

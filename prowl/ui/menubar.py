@@ -375,7 +375,10 @@ class ProwlApp(rumps.App):
         script = (
             f'display dialog "{hud._escape(question)}" '
             f'with title "{hud._escape(hud.TITLE)}" '
-            'buttons {"No", "Yes"} default button "Yes"'
+            # "No" is the default: this dialog gates arbitrary shell commands
+            # and agent turns, and it can appear while the user is typing —
+            # Return must never be the one that approves.
+            'buttons {"No", "Yes"} default button "No" with icon caution'
         )
         result = hud._run(script)
         if result.returncode != 0:

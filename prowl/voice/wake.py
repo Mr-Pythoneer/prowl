@@ -37,14 +37,23 @@ from .stt import app_path, stop_helpers
 
 _log = logging.getLogger("prowl")
 
-# How long a bare "Hey Bob" waits for the command that follows it.
-_ARM_SECONDS = 12.0
+# How long a bare "Hey Bob" waits for the command that follows it. Kept short:
+# during this window the next thing anyone says in the room is executed, so a
+# generous timeout is a generous window for someone else's sentence.
+_ARM_SECONDS = 5.0
 
 # How often to check the transcript file for new lines.
 _POLL_SECONDS = 0.25
 
-# Filler that may precede the wake word.
-_PREFIX = r"(?:hey|hi|hello|ok|okay|yo)?\s*"
+# The greeting is REQUIRED, not optional. With it optional, any sentence merely
+# starting with his name woke him — "Bob was asking about it" armed the listener
+# and handed the next sentence to the router. Addressing an assistant by name
+# almost always carries the greeting, so requiring it costs nothing.
+_PREFIX = r"(?:hey|hi|hello|ok|okay|yo)\s+"
+
+# ...except when the name is the entire utterance ("Bob?"), which is
+# unambiguously addressing him.
+_BARE_NAME_ONLY = True
 
 
 class WakeListener:
@@ -122,7 +131,41 @@ class WakeListener:
         # name turns up mid-sentence in ordinary conversation ("I told Bob
         # about it"); addressing someone by name naturally comes first, so
         # anchoring removes that whole class of false wake for free.
-        return re.compile(rf"^[\s,.]*{_PREFIX}{word}\b[\s,.!?-]*(.*)", re.I)
+        # Either "hey bob ..." or the name alone as the whole utterance.
+        return re.compile(
+            rf"^[\s,.]*(?:{_PREFIX}{word}\b[\s,.!?-]*(.*)"
+            rf"|{word}[\s,.!?-]*$())", re.I)
+
+    def _loose_pattern(self) -> re.Pattern:
+        """"bob <something>" — his name first, without a greeting.
+
+        Accepted only when the remainder is recognisably a safe command (see
+        :meth:`_safe_bare_command`). "Bob, open Safari" is how people actually
+        talk; "Bob was asking about it" is not addressed to him at all, and the
+        two are structurally identical.
+        """
+        word = re.escape(self.wake_word)
+        return re.compile(rf"^[\s,.]*{word}\b[\s,.!?-]+(.+)$", re.I)
+
+    @staticmethod
+    def _safe_bare_command(text: str) -> bool:
+        """True if *text* is a command the fast router maps to a safe skill.
+
+        Deliberately strict: only the deterministic pre-router counts, and only
+        for non-destructive skills. Anything the model would have to interpret —
+        and anything that could delete, quit or shell out — needs the greeting,
+        so an overheard sentence can never reach it.
+        """
+        try:
+            from ..brain import prematch
+            from .. import skills as skills_pkg
+        except Exception:  # noqa: BLE001 - never break listening on an import
+            return False
+        hit = prematch.match(text)
+        if not hit:
+            return False
+        skill = skills_pkg.REGISTRY.get(hit[0])
+        return skill is not None and not skill.spec.destructive
 
     # -- the resident recogniser ---------------------------------------------
     def _spawn(self) -> Path | None:
@@ -226,7 +269,18 @@ class WakeListener:
 
     def _handle(self, line: str) -> None:
         match = self._pattern().search(line)
+        if match is None:
+            loose = self._loose_pattern().search(line)
+            if loose is not None and self._safe_bare_command(loose.group(1)):
+                _log.info("wake (bare name) command: %r", loose.group(1).strip())
+                if callable(self.on_wake):
+                    self.on_wake()
+                if callable(self.on_command):
+                    self.on_command(loose.group(1).strip())
+                return
         if match:
+            # Group 1 is the trailing command after "hey bob ..."; group 2 is
+            # the empty alternative matched when the name stands alone.
             trailing = (match.group(1) or "").strip()
             _log.info("wake word heard; trailing=%r", trailing)
             if callable(self.on_wake):

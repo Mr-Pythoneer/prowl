@@ -90,12 +90,17 @@ class Router:
         try:
             raw = self.local.chat(system, utterance, json_mode=True, temperature=0.0)
         except BrainError:
-            # No brain reachable at all (no cloud key/network AND no Ollama):
-            # fall back to escalation if available, else say so plainly.
-            backend_on = self.cfg.escalation_enabled()
+            # No brain reachable at all (no cloud key or network AND no Ollama).
+            #
+            # This used to escalate, which fails open in the worst possible way:
+            # with no classifier running, *every* utterance the microphone picks
+            # up becomes an agent turn with shell access. Say so instead — an
+            # assistant that admits it is offline is strictly better than one
+            # that guesses with a shell.
             return Decision(
-                action="escalate" if backend_on else "chat",
-                reply=None if backend_on else "My local brain is offline right now.",
+                action="chat",
+                reply="My brain is offline right now — I couldn't reach the "
+                      "cloud model or Ollama.",
             )
 
         decision = self._parse(raw)
