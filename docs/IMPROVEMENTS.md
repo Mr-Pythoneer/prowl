@@ -53,9 +53,9 @@ including 0.1 above. Add both to the corpus.
 
 ---
 
-## Tier 2 — critical, more work
+## Tier 2 — DONE (2026-09-08)
 
-**2.1 — The `run_shell` denylist is trivially bypassable. M**
+**2.1 — ✅ The `run_shell` denylist is trivially bypassable. M**
 `prowl/skills/shell.py`. Verified: `rm -rf ~` is blocked, but `rm -rf ~ ;`,
 `rm -rf ~ && echo done`, `rm -rf "$HOME"`, `mv ~/Documents /tmp/gone`,
 `find ~ -mindepth 1 -delete` and `curl … | bash` all pass. The `\s*$` anchor
@@ -65,34 +65,34 @@ read-only commands, reject shell metacharacters, drop `shell=True` and pass
 argv. Anything else routes to escalation (which the module docstring already
 says is preferred).
 
-**2.2 — Two voice turns kill each other and blame the microphone. M**
+**2.2 — ✅ Two voice turns kill each other and blame the microphone. M**
 `prowl/ui/menubar.py` `_talk` has no re-entrancy guard, and `suspend()` is a
 bare flag rather than a refcount. Double-tap F5 and turn B's `stop_helpers()`
 kills turn A's live capture; turn A then reports *"I couldn't reach the
 microphone… grant permission"* — which is false, and is the exact symptom I
 chased twice already. Guard `_talk`, make suspend/resume refcounted.
 
-**2.3 — The whole turn runs on the wake-listener thread. M**
+**2.3 — ✅ The whole turn runs on the wake-listener thread. M**
 `prowl/voice/wake.py` calls `on_command` synchronously, so the tailing loop is
 blocked for the entire turn — up to 150s for an escalation. Consequences: "stop"
 cannot be heard while he is working, which defeats the point of control phrases;
 and his own speech can be processed as a command once the backlog drains.
 Dispatch onto a worker thread, as the hotkey path already does.
 
-**2.4 — One exception kills wake listening for the session. S**
+**2.4 — ✅ One exception kills wake listening for the session. S**
 `prowl/voice/wake.py` `_loop` has no `try` around `self._handle(line)`, and the
 callbacks are unguarded. Any exception ends the thread with no log, no
 `on_error`, and the menu still showing "listening". Presents as "Hey Bob worked
 this morning and doesn't now."
 
-**2.5 — `cleanup` can skip its own confirmation. S**
+**2.5 — ✅ `cleanup` can skip its own confirmation. S**
 `prowl/skills/cleanup.py` is `destructive=False`, so the executor gate never
 runs and it self-gates on an `apply` argument — which is *advertised to the
 model* in its spec. A model reading "wipe my library caches" has every reason to
 send `apply: true`, which skips the prompt. Remove `apply` from the spec so the
 router cannot set it; pass it from the CLI under a key the router can't produce.
 
-**2.6 — `wake.stop()` orphans its thread. S**
+**2.6 — ✅ `wake.stop()` orphans its thread. S**
 It sets `_thread = None` without joining, so a quick stop→start resurrects the
 old loop alongside the new one; both then `pkill` each other's recogniser every
 10 seconds. Trigger: "stop listening" then "wake up". Join with a timeout and
@@ -168,12 +168,10 @@ privacy artifact.
 
 1. ~~Tier 1 entire~~ — **done**. Every path where a misheard sentence could
    reach an unconfirmed agent is now closed.
-2. **3.1, 3.3, 4.1, 4.6, 4.7** — a batch of small wins: he survives reboot, can
+2. **Next: 3.1, 3.3, 4.1, 4.6, 4.7** — a batch of small wins: he survives reboot, can
    tell the time, stops burning a tenth of a core, and stops lying in the README.
-3. **2.1** — the shell allowlist. The single biggest reduction in blast radius.
-4. **2.2–2.6** — the concurrency cluster. These are the "it randomly stops
-   working" bugs; fixing them together is easier than one at a time.
-5. **3.2, 3.4, 3.5** — the interaction upgrades that make it feel like an
+3. ~~2.1 shell allowlist~~ and ~~2.2–2.6 the concurrency cluster~~ — **done**.
+4. **3.2, 3.4, 3.5** — the interaction upgrades that make it feel like an
    assistant rather than a voice-triggered command line.
 
 **What not to do:** more skills. Every finding above is in the loop *around* the

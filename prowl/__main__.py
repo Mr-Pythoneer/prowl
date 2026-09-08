@@ -129,7 +129,8 @@ def cmd_clean(argv: list[str]) -> int:
     ctx = _make_context(cfg, aloud=False, assume_yes="--yes" in argv, dry_run=not apply)
     from . import skills as skills_pkg
     skills_pkg.load_all()
-    result = Executor(cfg).run_skill("cleanup", {"category": category, "apply": apply}, ctx)
+    result = Executor(cfg).run_skill(
+        "cleanup", {"category": category, "_cli_apply": apply}, ctx)
     print(f"🐾 {result.speech}")
     if result.detail:
         print(result.detail)

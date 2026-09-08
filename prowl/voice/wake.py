@@ -59,18 +59,29 @@ _BARE_NAME_ONLY = True
 class WakeListener:
     """Tails the streaming recogniser and fires on the wake word."""
 
-    def __init__(self, cfg, on_wake=None, on_command=None, on_error=None):
+    def __init__(self, cfg, on_wake=None, on_command=None, on_error=None,
+                 dispatch=None):
         self.cfg = cfg
         self.on_wake = on_wake
         self.on_command = on_command
         self.on_error = on_error
+        # How to run a command. Handling it inline blocks the tailing loop for
+        # the whole turn — up to 150s for an escalation — during which "stop"
+        # cannot be heard, which defeats the point of control phrases.
+        self._dispatch = dispatch or (lambda fn, arg: fn(arg))
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._muted = threading.Event()
         # Set while a foreground capture (F5, click) owns the microphone.
+        # Refcounted: with a bare flag, two overlapping turns had the first one
+        # to finish resume listening while the second was still capturing, and
+        # the respawned recogniser then killed it.
         self._suspended = threading.Event()
+        self._suspend_depth = 0
+        self._suspend_lock = threading.Lock()
         self._armed_until = 0.0
         self._path: Path | None = None
+        self._generation = 0
 
     # -- lifecycle ------------------------------------------------------------
     @property
@@ -82,16 +93,44 @@ class WakeListener:
             return
         self._stop.clear()
         self._muted.clear()
-        self._thread = threading.Thread(target=self._loop, daemon=True,
-                                        name="prowl-wake")
+        # Each loop carries a generation number. stop() bumps it, so a loop that
+        # was mid-sleep when it was stopped exits even if start() has already
+        # cleared the stop flag underneath it — otherwise the old and new loops
+        # both run, and each one's _spawn() kills the other's recogniser.
+        self._generation += 1
+        generation = self._generation
+        self._thread = threading.Thread(target=self._loop, args=(generation,),
+                                        daemon=True, name="prowl-wake")
         self._thread.start()
         _log.info("wake listener started (word=%r)", self.wake_word)
 
     def stop(self) -> None:
         self._stop.set()
-        self._thread = None
+        self._generation += 1        # invalidate whatever loop is running
+        self._suspended.clear()
+        with self._suspend_lock:
+            self._suspend_depth = 0
+        thread, self._thread = self._thread, None
+        if thread is not None and thread is not threading.current_thread():
+            # Wait for it to actually finish, so a start() straight afterwards
+            # cannot end up with two loops competing for the microphone.
+            thread.join(timeout=3.0)
         stop_helpers()
+        self._cleanup_transcript()
         _log.info("wake listener stopped")
+
+    def _cleanup_transcript(self) -> None:
+        """Delete the streaming transcript file, if we made one.
+
+        It holds every phrase spoken near the Mac since the listener started —
+        both a disk leak and something not worth leaving in /tmp.
+        """
+        path, self._path = self._path, None
+        if path is not None:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     # Bob's own speech comes back through the microphone; ignore the stream
     # while he is talking rather than letting him answer himself.
@@ -106,18 +145,24 @@ class WakeListener:
     # "I couldn't reach the microphone" — one of them loses, seemingly at
     # random, and reports it as a permission problem.
     def suspend(self) -> None:
-        """Hand the microphone to a foreground capture."""
-        if self._suspended.is_set():
-            return
-        self._suspended.set()
-        stop_helpers()
+        """Hand the microphone to a foreground capture. Nestable."""
+        with self._suspend_lock:
+            self._suspend_depth += 1
+            first = self._suspend_depth == 1
+        if first:
+            self._suspended.set()
+            stop_helpers()
 
     def resume(self) -> None:
-        """Take the microphone back and start listening again."""
-        if not self._suspended.is_set():
-            return
-        self._suspended.clear()
-        # The loop notices the helper is gone and respawns it.
+        """Release one suspension; listening resumes when the last one ends."""
+        with self._suspend_lock:
+            if self._suspend_depth == 0:
+                return
+            self._suspend_depth -= 1
+            last = self._suspend_depth == 0
+        if last:
+            self._suspended.clear()
+            # The loop notices the helper is gone and respawns it.
 
     # -- config ---------------------------------------------------------------
     @property
@@ -206,7 +251,11 @@ class WakeListener:
             return True     # can't tell; assume fine rather than thrash
 
     # -- loop -----------------------------------------------------------------
-    def _loop(self) -> None:
+    def _loop(self, generation: int = 0) -> None:
+        def superseded() -> bool:
+            """True once this loop has been stopped or replaced."""
+            return self._stop.is_set() or generation != self._generation
+
         path = self._spawn()
         if path is None:
             return
@@ -214,9 +263,9 @@ class WakeListener:
         offset = 0
         last_check = time.time()
 
-        while not self._stop.is_set():
+        while not superseded():
             time.sleep(_POLL_SECONDS)
-            if self._stop.is_set():
+            if superseded():
                 return
 
             if self._suspended.is_set():
@@ -257,12 +306,19 @@ class WakeListener:
 
             for line in chunk.splitlines():
                 line = line.strip()
-                if not line or self._stop.is_set():
+                if not line or superseded():
                     continue
                 # Discard anything heard while Bob was talking.
                 if self._muted.is_set():
                     continue
-                self._handle(line)
+                try:
+                    self._handle(line)
+                except Exception:  # noqa: BLE001 - a bad turn must not end listening
+                    # Without this, one exception anywhere downstream (a failed
+                    # config write, an AppKit hiccup) killed the thread with no
+                    # log and no error — presenting as "it worked this morning
+                    # and now it doesn't".
+                    _log.exception("wake command handler raised")
 
         # Leaving the loop means we are done listening.
         stop_helpers()
@@ -276,7 +332,7 @@ class WakeListener:
                 if callable(self.on_wake):
                     self.on_wake()
                 if callable(self.on_command):
-                    self.on_command(loose.group(1).strip())
+                    self._dispatch(self.on_command, loose.group(1).strip())
                 return
         if match:
             # Group 1 is the trailing command after "hey bob ..."; group 2 is
@@ -288,7 +344,7 @@ class WakeListener:
             if trailing:
                 self._armed_until = 0.0
                 if callable(self.on_command):
-                    self.on_command(trailing)
+                    self._dispatch(self.on_command, trailing)
             else:
                 # Bare "Hey Bob" — the next thing said is the command.
                 self._armed_until = time.time() + _ARM_SECONDS
@@ -299,4 +355,4 @@ class WakeListener:
             self._armed_until = 0.0
             _log.info("wake command: %r", line)
             if callable(self.on_command):
-                self.on_command(line)
+                self._dispatch(self.on_command, line)

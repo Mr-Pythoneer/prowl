@@ -263,7 +263,6 @@ class Cleanup(Skill):
         ],
         args={
             "category": "one of the junk categories, or 'all' (default all)",
-            "apply": "true to actually clean; false/omitted to just report sizes",
         },
         destructive=False,  # manages its own confirmation (shows sizes first)
     )
@@ -292,7 +291,11 @@ class Cleanup(Skill):
         if ctx.dry_run:
             summary = f"I can free about {_human(total)}. Say clean up to reclaim it."
             return SkillResult.say(summary, detail=report)
-        if not self._truthy(args.get("apply")):
+        # `apply` skips the confirmation, so only the CLI may set it — under a
+        # key the router cannot produce. It used to be advertised in spec.args,
+        # which meant a model reading "wipe my library caches" had every reason
+        # to send apply=true and delete without asking.
+        if not self._truthy(args.get("_cli_apply")):
             if not ctx.confirm(f"Reclaim {_human(total)} across {len(sized)} categories?"):
                 return SkillResult.say("Left everything as-is.", detail=report)
 

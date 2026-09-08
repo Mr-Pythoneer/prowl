@@ -71,6 +71,8 @@ class ProwlApp(rumps.App):
         self.log = get_logger()
         # Last thing spoken, for "say that again".
         self._last_said = ""
+        # Serialises voice turns; see _talk.
+        self._talk_lock = threading.Lock()
 
         # One Orchestrator for the whole session (loads skills/brain/router once).
         self.orch = Orchestrator(cfg)
@@ -117,6 +119,7 @@ class ProwlApp(rumps.App):
         self.wake = WakeListener(
             cfg,
             on_wake=self._on_wake,
+            dispatch=_run_bg,
             on_command=self._on_wake_command,
             on_error=self._on_wake_error,
         )
@@ -419,7 +422,21 @@ class ProwlApp(rumps.App):
                 "idle")).start()
 
     def _talk(self) -> None:
-        """Capture one utterance and act on it (background thread only)."""
+        """Capture one utterance and act on it (background thread only).
+
+        Only one at a time: a second concurrent capture used to kill the
+        first one's recogniser and then report it as a microphone permission
+        failure, which it never was.
+        """
+        if not self._talk_lock.acquire(blocking=False):
+            self.log.info("already listening; ignoring a second request")
+            return
+        try:
+            self._talk_inner()
+        finally:
+            self._talk_lock.release()
+
+    def _talk_inner(self) -> None:
         self._wake_buddy()
         self._buddy("listening")
         # The wake listener holds the microphone continuously; two recognisers
