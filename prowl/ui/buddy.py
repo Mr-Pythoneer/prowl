@@ -228,6 +228,7 @@ class BuddyView(NSView):
         self._scale = 1.0
         self._interval = 1.0 / 10.0     # replaced by _retime() on show()
         self._was_blinking = False
+        self._pinned: tuple[str, ...] = ()   # thought-cloud lines
         self._trick = None           # name of the running trick, or None
         self._trick_t = 0.0
         self._last_activity = time.time()
@@ -274,7 +275,7 @@ class BuddyView(NSView):
     @objc.python_method
     def _pose_is_fixed(self) -> bool:
         """True when the current pose won't change, so a redraw is pointless."""
-        if self._trick is not None:
+        if self._trick is not None or self._pinned:
             return False
         return self._state in _STATIC_STATES and not self._on_ac
 
@@ -305,6 +306,13 @@ class BuddyView(NSView):
 
     def isMini(self):
         return self._mini
+
+    def setPinned_(self, lines):
+        """Set the thought-cloud contents (a tuple of short strings)."""
+        lines = tuple(str(x) for x in (lines or ()) if str(x).strip())[:3]
+        if lines != self._pinned:
+            self._pinned = lines
+            self.setNeedsDisplay_(True)
 
     def setText_(self, text):
         self._text = (text or "").strip()
@@ -561,9 +569,15 @@ class BuddyView(NSView):
             self._draw_zzz(cx + char_w * 0.55, base_y + char_h * 0.75, scale)
         if self._state == "thinking":
             self._draw_thought_dots(cx + 16 * scale, base_y + char_h + 4, scale)
+        # The thought cloud sits just above his head; a speech bubble, when
+        # there is one, goes above that so the two never overlap.
+        cloud_top = base_y + char_h + 8 * scale
+        if self._pinned and not self._mini:
+            cloud_top = self._draw_thought_cloud(cx, cloud_top, scale)
         # Mini mode is deliberately silent: the bubble is the bulky part.
         if self._text and not self._mini:
-            self._draw_bubble(self._text, base_y + char_h + 14)
+            self._draw_bubble(self._text, max(cloud_top + 14 * scale,
+                                              base_y + char_h + 14))
 
     # -- the character --------------------------------------------------------
     @objc.python_method
@@ -776,6 +790,75 @@ class BuddyView(NSView):
             _color(_INK, 0.30 + i * 0.14).set()
             NSBezierPath.bezierPathWithOvalInRect_(
                 NSMakeRect(x + i * 12 * scale, y + bounce, r * 2, r * 2)).fill()
+
+    @objc.python_method
+    def _draw_thought_cloud(self, cx, y, scale=1.0):
+        """A small cloud above his head holding what he's keeping track of.
+
+        Separate from the speech bubble on purpose: the bubble is something he
+        just said and clears itself, this is state he is holding. Round and
+        bumped rather than rectangular so the two never read as the same thing.
+        """
+        font = NSFont.systemFontOfSize_(10.0 * scale)
+        attrs = {NSFontAttributeName: font,
+                 NSForegroundColorAttributeName: _color(_INK, 0.78)}
+
+        widths, height = [], 0.0
+        for line in self._pinned:
+            size = NSString.stringWithString_(line).sizeWithAttributes_(attrs)
+            widths.append(size.width)
+            height += size.height
+        if not widths:
+            return y
+
+        pad_x, pad_y = 13.0 * scale, 9.0 * scale
+        w = min(self.bounds().size.width - 16 * scale, max(widths) + pad_x * 2)
+        h = height + pad_y * 2
+        x = cx - w / 2.0
+        # Keep it inside the window even with three lines.
+        y = min(y, self.bounds().size.height - h - 14 * scale)
+
+        # Body: a rounded rect with three bumps along the top, which reads as a
+        # cloud at this size without needing a real outline.
+        body = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+            NSMakeRect(x, y, w, h), h * 0.42, h * 0.42)
+        for i, frac in enumerate((0.26, 0.5, 0.74)):
+            r = h * (0.34 if i != 1 else 0.44)
+            body.appendBezierPathWithOvalInRect_(
+                NSMakeRect(x + w * frac - r, y + h - r * 1.1, r * 2, r * 2))
+
+        _color(_INK, 0.10).set()
+        NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+            NSMakeRect(x, y - 1.5 * scale, w, h), h * 0.42, h * 0.42).fill()
+
+        # Stroke first, then fill over it. The body and its bumps are one path,
+        # so stroking after filling draws every bump's full circle *through* the
+        # cloud; filling last covers the inner half of the stroke and leaves a
+        # single clean outline around the union.
+        _color(_INK, 0.14).set()
+        body.setLineWidth_(2.0)
+        body.stroke()
+        _color((1.0, 1.0, 1.0), 0.97).set()
+        body.fill()
+
+        # Two trailing puffs, so it reads as a thought rather than speech.
+        for i, (dy, r) in enumerate(((-7.0, 3.4), (-13.0, 2.2))):
+            puff = NSBezierPath.bezierPathWithOvalInRect_(
+                NSMakeRect(cx - r * scale + (i * 5.0 * scale),
+                           y + dy * scale, r * 2 * scale, r * 2 * scale))
+            _color(_INK, 0.14).set()
+            puff.setLineWidth_(1.6)
+            puff.stroke()
+            _color((1.0, 1.0, 1.0), 0.97).set()
+            puff.fill()
+
+        ty = y + h - pad_y
+        for line, width in zip(self._pinned, widths):
+            ty -= font.pointSize() * 1.32
+            ns = NSString.stringWithString_(line)
+            ns.drawAtPoint_withAttributes_(
+                NSMakePoint(cx - width / 2.0, ty), attrs)
+        return y + h
 
     @objc.python_method
     def _draw_bubble(self, text, y):
@@ -1024,6 +1107,10 @@ class Buddy:
     def play_trick(self, name: str):
         """Run a one-off animation (see TRICKS). Safe from any thread."""
         _on_main(lambda: self.view.playTrick_(name))
+
+    def set_pinned(self, lines):
+        """Set the thought-cloud lines. Safe from any thread."""
+        _on_main(lambda: self.view.setPinned_(tuple(lines or ())))
 
     def note_activity(self):
         """Reset the nap timer — he only sleeps when genuinely left alone."""

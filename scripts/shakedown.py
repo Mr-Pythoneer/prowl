@@ -96,6 +96,14 @@ ROUTING_CASES: list[tuple[str, str | None]] = [
     ("cancel my timer", "timer"),
     ("cancel my alarm", "timer"),
     ("how long is left on my timer", "timer"),
+    # short-term memory
+    ("remember that I parked in level 3", "remember"),
+    ("remember the wifi password is hunter2", "remember"),
+    ("note that the build is broken", "remember"),
+    ("what am I meant to remember", "remember"),
+    ("what did I ask you to remember", "remember"),
+    ("forget about the parking", "remember"),
+    ("forget everything", "remember"),
     # ...but these are questions for the model, not the clock
     ("what time should I leave", None),
     ("what time does the shop close", None),
@@ -124,6 +132,7 @@ ENV_DEPENDENT: dict[str, tuple[str, ...]] = {
 SKILL_ARGS: dict[str, dict] = {
     "time_date": {"what": "time"},
     "timer": {"action": "status"},
+    "remember": {"action": "recall"},
     "open_app": {"app": "Safari"},
     "set_volume": {"level": 40},
     "toggle_dark_mode": {"mode": "dark"},

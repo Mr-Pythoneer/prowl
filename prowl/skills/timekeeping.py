@@ -66,6 +66,21 @@ def parse_duration(text: str) -> int | None:
     return max(1, int(round(total)))
 
 
+def active_timers() -> list[tuple[str, int]]:
+    """Live timers as ``(label, seconds_remaining)`` — for the thought cloud.
+
+    A countdown the user cannot see is one they have to keep asking about.
+    """
+    now = time.time()
+    with _TIMERS_LOCK:
+        live = [e for e in _TIMERS if not e["cancelled"] and e["ends_at"] > now]
+    out = []
+    for entry in sorted(live, key=lambda e: e["ends_at"]):
+        label = entry["label"] or ("Alarm" if entry.get("is_alarm") else "Timer")
+        out.append((label, int(entry["ends_at"] - now)))
+    return out
+
+
 def parse_clock_time(text: str) -> datetime | None:
     """The next occurrence of a clock time in *text* ("7am", "half past six").
 

@@ -109,6 +109,20 @@ def match(utterance: str) -> Match:
         direction = "up" if t.strip() in ("louder", "volume up") else "down"
         return ("set_volume", {"direction": direction})
 
+    # --- short-term memory ---------------------------------------------------
+    if re.fullmatch(r"\s*(?:what(?:'?s| is| am i meant to| did i ask you to)?\s*"
+                    r"(?:are you )?(?:remember(?:ing)?|holding|keeping)[^?]*)"
+                    r"\s*[?.!]*\s*", t):
+        return ("remember", {"action": "recall"})
+    m = re.match(r"\s*forget\s+(?:about\s+)?(.+)", u, re.I)
+    if m:
+        return ("remember", {"action": "forget",
+                             "text": m.group(1).strip().rstrip(".!?")})
+    m = re.match(r"\s*(?:remember|keep in mind|note|make a note|don'?t let me forget)"
+                 r"\s+(.+)", u, re.I)
+    if m:
+        return ("remember", {"text": m.group(1).strip().rstrip(".!?")})
+
     # --- time and date -------------------------------------------------------
     # Deterministic on purpose: the model has no clock, and answered anyway.
     # Whole-phrase only: "what time is it" is the clock, but "what time should

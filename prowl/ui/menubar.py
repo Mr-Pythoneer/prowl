@@ -159,6 +159,11 @@ class ProwlApp(rumps.App):
             rumps.MenuItem("Quit", callback=self.on_quit),
         ]
 
+        # Keep the thought cloud in step with what he is actually holding.
+        self._pinned_stop = threading.Event()
+        threading.Thread(target=self._pin_loop, daemon=True,
+                         name="prowl-pins").start()
+
         # Global hotkey → same voice flow as the menu item. A missing pynput (or
         # any listener failure) must not stop the app from launching.
         # One listener for every hotkey: a second event tap in the same process
@@ -212,6 +217,7 @@ class ProwlApp(rumps.App):
 
     def on_toggle_wake(self, _sender) -> None:
         if self.wake.running:
+            self._pinned_stop.set()
             self.wake.stop()
             tts_stop()          # otherwise `say` keeps talking after we exit
             self.cfg.set("always_listening", False)
@@ -342,6 +348,48 @@ class ProwlApp(rumps.App):
             except Exception:  # noqa: BLE001
                 self.log.exception("buddy say failed")
         hud.notify(_TITLE, text)
+
+    def _pin_loop(self) -> None:
+        """Refresh the buddy's thought cloud once a second.
+
+        Polling rather than pushing: a countdown has to tick anyway, and one
+        cheap read per second is simpler than making every timer and note
+        notify the UI.
+        """
+        while not self._pinned_stop.wait(1.0):
+            if self.buddy is None:
+                continue
+            try:
+                self.buddy.set_pinned(self._pinned_lines())
+            except Exception:  # noqa: BLE001 - cosmetic; never kill the thread
+                self.log.debug("pin refresh failed", exc_info=True)
+
+    @staticmethod
+    def _pinned_lines() -> list[str]:
+        """What he is currently holding: timers counting down, then notes."""
+        lines: list[str] = []
+        try:
+            from ..skills.timekeeping import active_timers
+
+            for label, left in active_timers():
+                hours, rem = divmod(max(0, left), 3600)
+                mins, secs = divmod(rem, 60)
+                clock = (f"{hours}:{mins:02d}:{secs:02d}" if hours
+                         else f"{mins}:{secs:02d}")
+                lines.append(f"⏱ {clock}  {label}")
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            from ..skills.memory import active_notes
+
+            for note in active_notes():
+                lines.append(f"• {note}")
+        except Exception:  # noqa: BLE001
+            pass
+        # Three fit above his head; the rest are still there when asked.
+        if len(lines) > 3:
+            lines = lines[:2] + [f"• …and {len(lines) - 2} more"]
+        return [ln if len(ln) <= 34 else ln[:33] + "…" for ln in lines]
 
     def _wake_buddy(self) -> None:
         """Any interaction counts as activity, and ends a nap."""

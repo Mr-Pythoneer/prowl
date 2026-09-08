@@ -19,6 +19,7 @@ _SKILL_MODULES = [
     "apps",      # control the frontmost / named app via AppleScript
     "web",       # open URL, web search
     "timekeeping",  # clock, date, countdown timers
+    "memory",    # short-term notes, shown in the buddy's thought cloud
     "cleanup",   # reclaim disk / junk (destructive, dry-run by default)
     "shell",     # guarded free-form shell (destructive)
 ]
