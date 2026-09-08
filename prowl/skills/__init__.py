@@ -18,6 +18,7 @@ _SKILL_MODULES = [
     "files",     # find / reveal files
     "apps",      # control the frontmost / named app via AppleScript
     "web",       # open URL, web search
+    "timekeeping",  # clock, date, countdown timers
     "cleanup",   # reclaim disk / junk (destructive, dry-run by default)
     "shell",     # guarded free-form shell (destructive)
 ]

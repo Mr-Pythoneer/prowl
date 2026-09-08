@@ -81,6 +81,24 @@ ROUTING_CASES: list[tuple[str, str | None]] = [
     ("google best ramen near me", "web_search"),
     ("search the web for python asyncio", "web_search"),
     ("look up the weather in Tokyo", "web_search"),
+    # time, date, timers, alarms
+    ("what time is it", "time_date"),
+    ("what is the time", "time_date"),
+    ("tell me the time", "time_date"),
+    ("what's today's date", "time_date"),
+    ("what day is it", "time_date"),
+    ("set a timer for 10 minutes", "timer"),
+    ("remind me in 20 minutes to check the build", "timer"),
+    ("timer for an hour", "timer"),
+    ("set an alarm for 7am", "timer"),
+    ("wake me at 7:30", "timer"),
+    ("wake me up at 6am to go running", "timer"),
+    ("cancel my timer", "timer"),
+    ("cancel my alarm", "timer"),
+    ("how long is left on my timer", "timer"),
+    # ...but these are questions for the model, not the clock
+    ("what time should I leave", None),
+    ("what time does the shop close", None),
     # cleanup
     ("clean up my mac", "cleanup"),
     ("empty the trash", "cleanup"),
@@ -104,6 +122,8 @@ ENV_DEPENDENT: dict[str, tuple[str, ...]] = {
 }
 
 SKILL_ARGS: dict[str, dict] = {
+    "time_date": {"what": "time"},
+    "timer": {"action": "status"},
     "open_app": {"app": "Safari"},
     "set_volume": {"level": 40},
     "toggle_dark_mode": {"mode": "dark"},
@@ -164,6 +184,10 @@ CONTROL_CASES: list[tuple[str, str | None]] = [
     ("come back", "show"),
     ("say that again", "repeat"),
     ("what can you do", "help"),
+    ("show me the details", "details"),
+    ("what did you find", "details"),
+    ("copy that", "copy"),
+    ("put that on my clipboard", "copy"),
     # Must stay with the router / skills.
     ("stop the music", None),
     ("go to sleep", None),                   # means sleep the Mac

@@ -71,6 +71,10 @@ class ProwlApp(rumps.App):
         self.log = get_logger()
         # Last thing spoken, for "say that again".
         self._last_said = ""
+        # The full text behind the last spoken summary — a file list, a size
+        # breakdown, an agent's whole answer. Speaking one line and discarding
+        # the rest is where a request quietly dead-ends.
+        self._last_detail = ""
         # Serialises voice turns; see _talk.
         self._talk_lock = threading.Lock()
 
@@ -275,6 +279,17 @@ class ProwlApp(rumps.App):
                 self.buddy.show_threadsafe()
             self.cfg.set("buddy_enabled", True)
             self._buddy("idle")
+        elif action == "details":
+            if self._last_detail:
+                hud.show_text("Details", self._last_detail)
+            else:
+                self._respond("There's nothing more to show.", silent)
+        elif action == "copy":
+            if self._last_detail:
+                self._copy_to_clipboard(self._last_detail)
+                self._respond("Copied.", silent)
+            else:
+                self._respond("There's nothing to copy.", silent)
         elif action == "repeat":
             if self._last_said:
                 self._respond(self._last_said, silent)
@@ -373,6 +388,15 @@ class ProwlApp(rumps.App):
             # Back to idle even while the wake listener runs — see note below.
             self.buddy.set_state("idle")
 
+    @staticmethod
+    def _copy_to_clipboard(text: str) -> None:
+        """Put *text* on the clipboard; failures are not worth interrupting for."""
+        try:
+            subprocess.run(["pbcopy"], input=text, text=True,
+                           capture_output=True, timeout=10)
+        except (FileNotFoundError, subprocess.SubprocessError, OSError):
+            pass
+
     def _confirm(self, question: str) -> bool:
         """Ask a yes/no question via an osascript dialog; True = go ahead."""
         script = (
@@ -409,6 +433,8 @@ class ProwlApp(rumps.App):
             else:
                 ctx = self.ctx
             result = self.orch.handle(text, ctx)
+            if result is not None and result.detail:
+                self._last_detail = result.detail
             # A small reaction makes success and failure legible at a glance,
             # without another spoken sentence.
             if self.buddy is not None and result is not None:

@@ -33,6 +33,14 @@ _CONTROLS: tuple[tuple[str, str], ...] = (
              r"disappear|minimi[sz]e)\s*[.!]?\s*$"),
     ("show", r"^\s*(?:come back|show yourself|there you are|"
              r"where are you|come here)\s*[.!]?\s*$"),
+    # Show / copy the detail from the last result. Every skill produces a
+    # `detail` — the file list, the size breakdown, the full agent answer — and
+    # until now only the CLI ever displayed it.
+    ("details", r"^\s*(?:show (?:me )?(?:the )?(?:details|list|them|it|more)"
+                r"|details|the list|show me more|what did you find"
+                r"|show (?:me )?the (?:files|results))\s*[.!?]?\s*$"),
+    ("copy", r"^\s*(?:copy (?:that|it|this|the (?:list|results|details))"
+             r"|put (?:that|it) on (?:my )?(?:the )?clipboard)\s*[.!?]?\s*$"),
     # Say the last thing again.
     ("repeat", r"^\s*(?:repeat|say that again|what did you say|"
                r"come again|pardon|say again)\s*[.!]?\s*$"),

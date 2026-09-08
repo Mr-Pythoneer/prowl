@@ -109,6 +109,55 @@ def match(utterance: str) -> Match:
         direction = "up" if t.strip() in ("louder", "volume up") else "down"
         return ("set_volume", {"direction": direction})
 
+    # --- time and date -------------------------------------------------------
+    # Deterministic on purpose: the model has no clock, and answered anyway.
+    # Whole-phrase only: "what time is it" is the clock, but "what time should
+    # I leave" is a question for the model, and a loose match steals it.
+    if re.fullmatch(
+            r"\s*(?:hey |ok )?(?:bob[,\s]+)?"
+            r"(?:what(?:'?s| is)? (?:the )?time(?: is it)?"
+            r"|what time is it(?: (?:now|right now))?"
+            r"|(?:the )?time(?: please)?"
+            r"|tell me the time)\s*[?.!]*\s*", t):
+        return ("time_date", {"what": "time"})
+    if re.fullmatch(
+            r"\s*(?:hey |ok )?(?:bob[,\s]+)?"
+            r"(?:what(?:'?s| is)? (?:the |today'?s )?date"
+            r"|what day is it(?: today)?"
+            r"|what'?s the day"
+            r"|tell me the date"
+            r"|what'?s today)\s*[?.!]*\s*", t):
+        return ("time_date", {"what": "date"})
+
+    # --- timers --------------------------------------------------------------
+    if re.search(r"\b(cancel|stop|clear)\b.*\btimers?\b", t):
+        return ("timer", {"action": "cancel"})
+    if re.search(r"\b(how (long|much time)|what'?s? left|time left|remaining)\b.*\btimers?\b", t) \
+            or re.search(r"\btimers?\b.*\b(left|remaining|status)\b", t):
+        return ("timer", {"action": "status"})
+    # Alarms: a clock time rather than a duration.
+    if re.search(r"\b(cancel|stop|clear)\b.*\balarms?\b", t):
+        return ("timer", {"action": "cancel"})
+    m = re.search(r"\b(?:set (?:an? )?alarm(?: for| at)?|wake me(?: up)?(?: at| for)?"
+                  r"|alarm for|alarm at)\s+(.+)", u, re.I)
+    if m:
+        rest = m.group(1).strip().rstrip(".!?")
+        label = ""
+        parts = re.split(r"\s+(?:to|so i can)\s+", rest, maxsplit=1)
+        if len(parts) == 2:
+            rest, label = parts[0].strip(), parts[1].strip()
+        return ("timer", {"at": rest, "label": label})
+
+    m = re.search(r"\b(?:set (?:a )?timer for|timer for|remind me in)\s+(.+)", u, re.I)
+    if m:
+        rest = m.group(1).strip().rstrip(".!?")
+        # "remind me in 20 minutes to check the build" — split the label off.
+        label = ""
+        parts = re.split(r"\s+to\s+", rest, maxsplit=1)
+        if len(parts) == 2:
+            rest, label = parts[0].strip(), parts[1].strip()
+        return ("timer", {"duration": rest, "label": label})
+
     # --- clipboard -----------------------------------------------------------
     if re.search(r"\b(?:what'?s|what is)\s+(?:on|in)\s+(?:my|the)\s+clipboard\b", t) \
             or re.search(r"\b(?:read|show|check)\s+(?:my|the)\s+clipboard\b", t) \

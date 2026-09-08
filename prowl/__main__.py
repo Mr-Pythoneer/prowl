@@ -7,6 +7,7 @@
     prowl offline [on|off]        local-model-only mode (no online agent calls)
     prowl doctor                  check the environment (brain, escalation, hotkey, voice)
     prowl voices                  list speech voices; `voices try/set <name>`
+    prowl autostart [on|off]      start Bob at login and restart him on crash
     prowl config [get|set k v]    read/update ~/.prowl/config.json
 
 The one-shot form is the workhorse and needs nothing but the standard library
@@ -22,7 +23,7 @@ from .core.config import Config, CONFIG_PATH, ensure_home
 from .core.context import Context
 from .core.logs import get_logger
 
-_SUBCOMMANDS = {"listen", "serve", "clean", "offline", "doctor", "config", "voices", "voice",
+_SUBCOMMANDS = {"listen", "serve", "clean", "offline", "doctor", "config", "voices", "voice", "autostart",
                 "help", "--help", "-h"}
 
 
@@ -289,6 +290,37 @@ def cmd_doctor() -> int:
 
 
 
+def cmd_autostart(argv: list[str]) -> int:
+    """Turn the login-item LaunchAgent on or off."""
+    import subprocess
+    from pathlib import Path as _Path
+
+    root = _Path(__file__).resolve().parent.parent
+    script = root / "scripts" / "install_agent.sh"
+    label = "ai.prowl.serve"
+    want = (argv[0].lower() if argv else "status")
+
+    if want in ("status", ""):
+        plist = _Path.home() / "Library/LaunchAgents" / f"{label}.plist"
+        if not plist.exists():
+            print("autostart: off — he won't survive a reboot.")
+            print("turn on with: prowl autostart on")
+            return 0
+        loaded = subprocess.run(
+            ["launchctl", "print", f"gui/{os.getuid()}/{label}"],
+            capture_output=True, text=True).returncode == 0
+        print(f"autostart: on ({'loaded' if loaded else 'installed, not loaded'})")
+        return 0
+
+    if want in ("on", "enable", "install"):
+        return subprocess.run(["bash", str(script)]).returncode
+    if want in ("off", "disable", "remove", "uninstall"):
+        return subprocess.run(["bash", str(script), "--remove"]).returncode
+
+    print("usage: prowl autostart [on|off|status]")
+    return 2
+
+
 def cmd_voices(argv: list[str]) -> int:
     """List installed voices, preview one, or set the voice Prowl speaks with."""
     from .voice import tts
@@ -425,6 +457,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_config(argv[1:])
     if cmd in ("voices", "voice"):
         return cmd_voices(argv[1:])
+    if cmd == "autostart":
+        return cmd_autostart(argv[1:])
 
     # Default: everything is one utterance. Flags are stripped out.
     speak_aloud = "--quiet" not in argv and "-q" not in argv

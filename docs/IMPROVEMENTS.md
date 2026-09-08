@@ -100,22 +100,22 @@ give each loop a generation token.
 
 ---
 
-## Tier 3 — high value, moderate effort
+## Tier 3 — mostly DONE (2026-09-08)
 
-**3.1 — He doesn't survive a reboot. S**
+**3.1 — ✅ He doesn't survive a reboot. S**
 No LaunchAgent, no login item. `prowl serve` is hand-started and dies on
 restart, logout or crash. Every other improvement is worth nothing on the days
 he isn't running. Ship `ai.prowl.serve.plist` with `KeepAlive` plus
 `prowl autostart on|off`.
 
-**3.2 — Results dead-end in the GUI. M**
+**3.2 — ✅ Results dead-end in the GUI. M**
 Every skill returns `detail`; the CLI prints it, the menu bar discards it. So
 "find my invoice PDF" says *"Found 12 files"* and shows none of them — same for
 recent downloads, running apps, the cleanup breakdown, and every Claude answer
 (trimmed to 400 chars, remainder dropped). Needs a scrollable results panel and
 a "copy that" control phrase.
 
-**3.3 — He cannot tell the time. S**
+**3.3 — ✅ He cannot tell the time. S**
 No clock, no timer. "What time is it" falls to the model, which has no clock and
 **invents** an answer. Wrong-but-confident is the worst failure class here. One
 `time_date` skill plus one `timer` skill.
@@ -125,20 +125,20 @@ No clock, no timer. "What time is it" falls to the model, which has no clock and
 subprocess for up to 150s; say "stop" and nothing happens. Run turns under a
 cancellable handle and kill the process group.
 
-**3.5 — No memory of the previous turn. M**
+**3.5 — ✅ No memory of the previous turn. M**
 `"now close it"` routes to `quit_app {'app': 'it'}`. No "do it again", no "the
 first one", no undo, and no way to correct a misrecognition except repeating the
 whole sentence. Doesn't need LLM history — keep the last `SkillResult` and its
 paths, and prematch "again"/"the first one"/"undo" against it.
 
-**3.6 — Config writes are not atomic. S**
+**3.6 — ✅ Config writes are not atomic. S**
 `Config.save` truncates and rewrites with no lock, called from the main thread
 *and* the wake-listener thread (on every control phrase). A torn write is caught
 by `load` and silently replaced with `{}` — **every setting reverts to defaults
 with no warning**. Write to a temp file and `os.replace`; log loudly on a parse
 failure instead of discarding.
 
-**3.7 — The wake transcript file grows forever. S**
+**3.7 — ✅ The wake transcript file grows forever. S**
 `prowl/voice/wake.py` creates it with `delete=False` and never unlinks it, on
 every start and every helper restart. With always-listening on, it accumulates
 every phrase spoken near the Mac indefinitely and survives quit. A leak and a
@@ -168,7 +168,7 @@ privacy artifact.
 
 1. ~~Tier 1 entire~~ — **done**. Every path where a misheard sentence could
    reach an unconfirmed agent is now closed.
-2. **Next: 3.1, 3.3, 4.1, 4.6, 4.7** — a batch of small wins: he survives reboot, can
+2. ~~3.1, 3.3~~ — **done**. Next: **4.1, 4.6, 4.7** — a batch of small wins: he survives reboot, can
    tell the time, stops burning a tenth of a core, and stops lying in the README.
 3. ~~2.1 shell allowlist~~ and ~~2.2–2.6 the concurrency cluster~~ — **done**.
 4. **3.2, 3.4, 3.5** — the interaction upgrades that make it feel like an
@@ -176,3 +176,14 @@ privacy artifact.
 
 **What not to do:** more skills. Every finding above is in the loop *around* the
 skills, and skill #21 gets used once a month.
+
+
+---
+
+## Still open
+
+* **3.4** — "stop" cannot cancel an in-flight escalation (needs a cancellable
+  process handle; the control phrase itself now reaches him instantly, since
+  turns no longer block the listener thread).
+* **All of Tier 4** — eleven smaller items, headed by the idle animation cost
+  and the README's stale privacy claim.

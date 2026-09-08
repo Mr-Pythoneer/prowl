@@ -10,6 +10,7 @@ This is the single entry point every front-end (CLI, menu bar, voice) calls.
 """
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from . import skills as skills_pkg
@@ -19,6 +20,16 @@ from .brain.router import Decision, Router
 from .core.config import Config
 from .core.context import Context
 from .skills.base import SkillResult
+
+# Words that stand in for whatever the last turn acted on.
+_PRONOUNS = frozenset({"it", "that", "this", "them", "those", "it again",
+                       "that one", "the app", "the same"})
+
+# "again" as a request to redo the last action (not the TTS "say that again",
+# which control.py handles before this is ever reached).
+_ASKS_REPEAT = re.compile(
+    r"^\s*(?:do (?:it|that) again|again|one more time|redo (?:it|that)|"
+    r"same again|do the same(?: thing)?(?: again)?)\s*[.!?]*\s*$", re.I)
 
 
 class Executor:
@@ -66,6 +77,14 @@ class Orchestrator:
         self.router = Router(self.cfg, self.local)
         self.executor = Executor(self.cfg)
         self.escalator = Escalator(self.cfg)
+        # One turn of memory, so follow-ups work. Without it "now close it"
+        # routed to quit_app with the app literally named "it", and a
+        # misrecognition could only be recovered by repeating the whole
+        # sentence. Deliberately shallow: the last skill and its arguments,
+        # not a conversation history.
+        self._last_skill: str | None = None
+        self._last_args: dict[str, Any] = {}
+        self._last_app: str = ""
 
     def handle(self, utterance: str, ctx: Context) -> SkillResult:
         utterance = (utterance or "").strip()
@@ -73,11 +92,27 @@ class Orchestrator:
             return SkillResult.fail("I didn't catch that.")
 
         ctx.note(f"heard: {utterance!r}")
+
+        # "do that again" replays the last turn rather than being re-routed —
+        # the model would otherwise have to guess what "that" was.
+        if _ASKS_REPEAT.match(utterance):
+            if not self._last_skill:
+                msg = "I haven't done anything yet."
+                ctx.speak(msg)
+                return SkillResult.fail(msg)
+            ctx.note(f"repeating: {self._last_skill} {self._last_args}")
+            result = self.executor.run_skill(
+                self._last_skill, dict(self._last_args), ctx)
+            ctx.speak(result.speech)
+            return result
+
         decision = self.router.decide(utterance)
+        self._resolve_references(decision)
         ctx.note(f"decision: {decision.action} skill={decision.skill}")
 
         if decision.action == "skill" and decision.skill:
             result = self.executor.run_skill(decision.skill, decision.args, ctx)
+            self._remember(decision)
             ctx.speak(result.speech)
             return result
 
@@ -86,6 +121,28 @@ class Orchestrator:
 
         # chat
         return self._chat(utterance, decision, ctx)
+
+    # -- one turn of memory ---------------------------------------------------
+    def _remember(self, decision: Decision) -> None:
+        """Keep just enough of this turn to resolve the next one's pronouns."""
+        self._last_skill = decision.skill
+        self._last_args = dict(decision.args or {})
+        app = str(self._last_args.get("app") or "").strip()
+        if app and app.lower() not in _PRONOUNS:
+            self._last_app = app
+
+    def _resolve_references(self, decision: Decision) -> None:
+        """Replace "it"/"that" in the decision's args with the last subject.
+
+        Only pronouns are substituted, and only from the immediately preceding
+        turn — enough for "open Safari … now close it", without pretending to
+        hold a conversation.
+        """
+        if decision.action != "skill" or not isinstance(decision.args, dict):
+            return
+        app = str(decision.args.get("app") or "").strip().lower()
+        if app in _PRONOUNS and self._last_app:
+            decision.args["app"] = self._last_app
 
     # -- branches -------------------------------------------------------------
     def _chat(self, utterance: str, decision: Decision, ctx: Context) -> SkillResult:

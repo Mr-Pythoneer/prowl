@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 import os
 import re
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -203,14 +205,47 @@ class Config:
         if path.exists():
             try:
                 data = json.loads(path.read_text())
-            except (json.JSONDecodeError, OSError):
-                # A broken config should never brick the assistant.
+            except (json.JSONDecodeError, OSError) as exc:
+                # A broken config must never brick the assistant — but silently
+                # continuing with defaults means every setting the user ever
+                # changed vanishes with no explanation. Keep the file so it can
+                # be recovered, and say so loudly.
+                logging.getLogger("prowl").error(
+                    "config at %s is unreadable (%s); falling back to defaults",
+                    path, exc)
+                try:
+                    broken = path.with_suffix(".json.corrupt")
+                    path.replace(broken)
+                    logging.getLogger("prowl").error(
+                        "the unreadable config was kept at %s", broken)
+                except OSError:
+                    pass
                 data = {}
         return cls(data)
 
     def save(self, path: Path = CONFIG_PATH) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(self._data, indent=2, sort_keys=True))
+        """Persist the config atomically.
+
+        Written from the rumps main thread *and* the wake-listener thread (every
+        control phrase saves), so a plain truncate-and-write could interleave or
+        be interrupted, leaving JSON that :meth:`load` would discard — silently
+        resetting every setting. Write a temp file, then rename: the rename is
+        atomic, so a reader sees either the old file or the new one.
+        """
+        with _SAVE_LOCK:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            payload = json.dumps(self._data, indent=2, sort_keys=True)
+            tmp = path.with_name(path.name + f".tmp{os.getpid()}")
+            try:
+                tmp.write_text(payload)
+                os.replace(tmp, path)
+            except OSError:
+                logging.getLogger("prowl").exception("could not save config")
+                tmp.unlink(missing_ok=True)
+
+
+# Serialises config writes across the threads that make them.
+_SAVE_LOCK = threading.Lock()
 
 
 def ensure_home() -> None:

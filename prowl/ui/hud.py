@@ -74,6 +74,33 @@ def ask_text(prompt: str = "What do you need?", default: str = "") -> str | None
     return out[idx + len(_TEXT_MARKER):]
 
 
+def show_text(title: str, body: str, limit: int = 4000) -> None:
+    """Show a block of text the user can read and scroll.
+
+    A spoken one-liner is the wrong shape for a file list or an agent's full
+    answer, and a notification banner truncates. This is a plain dialog, which
+    is not elegant but is readable and selectable — and needs no extra
+    dependency or permission.
+    """
+    body = (body or "").strip()
+    if not body:
+        return
+    if len(body) > limit:
+        body = body[:limit].rsplit("\n", 1)[0] + "\n\n… (truncated)"
+    script = (
+        f'display dialog "{_escape(body)}" '
+        f'with title "{_escape(title)}" '
+        'buttons {"Copy", "Done"} default button "Done"'
+    )
+    result = _run(script)
+    if result.returncode == 0 and "button returned:Copy" in result.stdout:
+        try:
+            subprocess.run(["pbcopy"], input=body, text=True,
+                           capture_output=True, timeout=10)
+        except (FileNotFoundError, subprocess.SubprocessError, OSError):
+            pass
+
+
 def notify(title: str, message: str) -> None:
     """Post a transient macOS notification. Best-effort; never raises."""
     script = (
