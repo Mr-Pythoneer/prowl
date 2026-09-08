@@ -347,14 +347,6 @@ class BuddyView(NSView):
 
         if self._text and time.time() > self._text_until:
             self._text = ""
-            self._interval = 1.0 / 10.0     # replaced by _retime() on show()
-        self._was_blinking = False
-        self._trick = None           # name of the running trick, or None
-        self._trick_t = 0.0
-        self._last_activity = time.time()
-        self._power_elapsed = 0.0
-        self._owner = None              # set by Buddy, so state can re-time
-        self._on_ac = _on_ac_power()          # the bubble vanishing must be drawn now
 
         # Re-check the power source now and then; plugging in should smooth the
         # animation out without restarting anything.
