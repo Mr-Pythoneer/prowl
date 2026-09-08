@@ -245,8 +245,14 @@ class Timer(Skill):
         ends = datetime.now() + timedelta(seconds=seconds)
         if alarm_at is not None:
             spoken = f"Alarm set for {alarm_at:%-I:%M %p}"
-            if seconds > 12 * 3600 or alarm_at.day != datetime.now().day:
-                spoken += f" {'tomorrow' if (alarm_at.date() - datetime.now().date()).days == 1 else alarm_at:%A}"
+            # Say which day when it isn't today. Built as its own value: a
+            # conditional inside a format spec applies the spec to whichever
+            # branch wins, and "%A" is meaningless for the string "tomorrow".
+            days_ahead = (alarm_at.date() - datetime.now().date()).days
+            if days_ahead == 1:
+                spoken += " tomorrow"
+            elif days_ahead > 1:
+                spoken += f" on {alarm_at:%A}"
         else:
             spoken = f"Timer set for {_spoken_duration(seconds)}"
         return SkillResult.say(

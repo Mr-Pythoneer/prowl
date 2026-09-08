@@ -71,7 +71,11 @@ def _move_to_trash(path: Path) -> bool:
         pass
     # Fallback: ask Finder to delete (also goes to Trash).
     try:
-        script = f'tell application "Finder" to delete (POSIX file "{path}")'
+        # The path is interpolated into AppleScript, so a filename containing a
+        # quote could close the string and run arbitrary code. Names come from
+        # directory listings, not from us, so escape before interpolating.
+        safe = str(path).replace("\\", "\\\\").replace('"', '\\"')
+        script = f'tell application "Finder" to delete (POSIX file "{safe}")'
         r = subprocess.run(["osascript", "-e", script], capture_output=True, timeout=30)
         return r.returncode == 0
     except subprocess.SubprocessError:
@@ -138,10 +142,14 @@ def _find_delete(roots: list[Path], name: str) -> tuple[Callable[[], int], Calla
                 continue
             try:
                 out = subprocess.run(
-                    ["find", str(root), "-name", name], capture_output=True,
+                    ["find", str(root), "-name", name, "-print0"], capture_output=True,
                     text=True, timeout=60,
                 )
-                found += [Path(p) for p in out.stdout.splitlines() if p]
+                # NUL-delimited: splitting on newlines turns a directory whose
+                # name contains one into two paths, neither of which `find`
+                # matched — and these categories delete permanently, not to
+                # Trash, so a bogus path is unrecoverable.
+                found += [Path(p) for p in out.stdout.split("\0") if p]
             except subprocess.SubprocessError:
                 continue
         return found

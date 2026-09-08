@@ -29,6 +29,8 @@ from ..core.logs import get_logger
 from ..executor import Orchestrator
 from ..voice import stt
 from ..voice.tts import speak_async, stop as tts_stop
+import re
+
 from ..voice.control import match_control
 from .buddy import match_trick
 from ..voice.wake import WakeListener
@@ -55,6 +57,18 @@ _TRICK_REPLIES = {
 
 # Cap the doctor subprocess so a hung check can't wedge the worker thread.
 _DOCTOR_TIMEOUT = 60
+
+
+class _ShortCapture:
+    """Config view with a brief listening window, for yes/no answers."""
+
+    def __init__(self, cfg, seconds: int):
+        self._cfg, self._seconds = cfg, seconds
+
+    def get(self, key, default=None):
+        if key == "stt_max_seconds":
+            return self._seconds
+        return self._cfg.get(key, default)
 
 
 def _run_bg(target, *args) -> None:
@@ -199,6 +213,7 @@ class ProwlApp(rumps.App):
     def on_toggle_wake(self, _sender) -> None:
         if self.wake.running:
             self.wake.stop()
+            tts_stop()          # otherwise `say` keeps talking after we exit
             self.cfg.set("always_listening", False)
             self._buddy("idle")
             self._tell("Stopped listening for the wake word.")
@@ -398,7 +413,52 @@ class ProwlApp(rumps.App):
             pass
 
     def _confirm(self, question: str) -> bool:
-        """Ask a yes/no question via an osascript dialog; True = go ahead."""
+        """Ask a yes/no question. Spoken first, with the dialog as the fallback.
+
+        A hands-free assistant whose only gate needs the mouse quietly reverts
+        to being a GUI app at the exact moment it should feel like a voice one —
+        and destructive actions are when your hands are most likely busy. So ask
+        aloud and listen for an answer; if voice isn't available, or nothing
+        intelligible comes back, fall through to the dialog rather than
+        guessing.
+        """
+        if self.cfg.voice_enabled and self.cfg.get("confirm_by_voice", True):
+            spoken = self._confirm_by_voice(question)
+            if spoken is not None:
+                return spoken
+        return self._confirm_by_dialog(question)
+
+    def _confirm_by_voice(self, question: str) -> bool | None:
+        """Ask aloud and listen. True/False, or None if we couldn't tell."""
+        self._tell(question)
+        try:
+            from ..voice.tts import speak as tts_speak
+
+            # Blocking, so the microphone doesn't hear the question itself.
+            tts_speak(f"{question} Yes or no?", self.cfg)
+            self.wake.suspend()
+            try:
+                heard, _ = stt.listen_once_ex(_ShortCapture(self.cfg, 6))
+            finally:
+                self.wake.resume()
+        except Exception:  # noqa: BLE001 - fall back to the dialog
+            self.log.exception("voice confirmation failed")
+            return None
+
+        answer = (heard or "").strip().lower().rstrip(".!?")
+        self.log.info("voice confirmation heard: %r", answer)
+        if not answer:
+            return None
+        if re.match(r"^(yes|yeah|yep|yup|sure|ok|okay|go ahead|do it|confirm|"
+                    r"affirmative|please do)\b", answer):
+            return True
+        if re.match(r"^(no|nope|nah|stop|cancel|don'?t|never ?mind|forget it|"
+                    r"negative|abort)\b", answer):
+            return False
+        return None            # unintelligible: ask properly, don't assume
+
+    def _confirm_by_dialog(self, question: str) -> bool:
+        """The original modal, used when voice can't answer."""
         script = (
             f'display dialog "{hud._escape(question)}" '
             f'with title "{hud._escape(hud.TITLE)}" '

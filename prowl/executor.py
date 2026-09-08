@@ -11,6 +11,7 @@ This is the single entry point every front-end (CLI, menu bar, voice) calls.
 from __future__ import annotations
 
 import re
+import subprocess
 from typing import Any
 
 from . import skills as skills_pkg
@@ -20,6 +21,49 @@ from .brain.router import Decision, Router
 from .core.config import Config
 from .core.context import Context
 from .skills.base import SkillResult
+
+def _with_context(utterance: str) -> str:
+    """Attach the clipboard and frontmost app to an escalated request.
+
+    "What does this error mean" is the most natural thing to ask a desktop
+    assistant, and it cannot work from words alone — "this" is whatever is on
+    screen or on the clipboard. Only added when the request actually refers to
+    something, so ordinary tasks aren't padded with irrelevant context.
+    """
+    if not _REFERS_TO_CONTEXT.search(utterance):
+        return utterance
+
+    bits = []
+    try:
+        front = subprocess.run(
+            ["osascript", "-e",
+             'tell application "System Events" to get name of first '
+             'application process whose frontmost is true'],
+            capture_output=True, text=True, timeout=5).stdout.strip()
+        if front and front != "Bob":
+            bits.append(f"Frontmost app: {front}")
+    except (FileNotFoundError, subprocess.SubprocessError, OSError):
+        pass
+    try:
+        clip = subprocess.run(["pbpaste"], capture_output=True, text=True,
+                              timeout=5).stdout.strip()
+        if clip:
+            if len(clip) > 4000:
+                clip = clip[:4000] + "\n… (truncated)"
+            bits.append(f"Clipboard contents:\n{clip}")
+    except (FileNotFoundError, subprocess.SubprocessError, OSError):
+        pass
+
+    if not bits:
+        return utterance
+    return utterance + "\n\n---\nContext from the user's Mac:\n" + "\n\n".join(bits)
+
+
+# Requests that point at something the words alone don't carry.
+_REFERS_TO_CONTEXT = re.compile(
+    r"\b(this|that|it|here|on my screen|on screen|the error|the clipboard|"
+    r"what i copied|selected|highlighted)\b", re.I)
+
 
 # Words that stand in for whatever the last turn acted on.
 _PRONOUNS = frozenset({"it", "that", "this", "them", "those", "it again",
@@ -178,7 +222,7 @@ class Orchestrator:
 
         ctx.speak("On it — this one needs the smart agent, give me a moment.")
         try:
-            answer = self.escalator.run(utterance)
+            answer = self.escalator.run(_with_context(utterance))
         except EscalationError as exc:
             msg = f"I couldn't reach the smart agent: {exc}"
             ctx.speak("I couldn't reach the smart agent.")

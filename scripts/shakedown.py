@@ -214,6 +214,50 @@ WAKE_CASES: list[tuple[str, bool]] = [
 ]
 
 
+def run_timekeeping() -> list[str]:
+    """Actually run the clock and timer skills and read their replies.
+
+    Routing tests never execute a skill, so an alarm whose confirmation line
+    raised on formatting passed every check while being broken for the user.
+    """
+    import logging
+
+    from prowl.core.config import Config
+    from prowl.core.context import Context
+    from prowl import skills as skills_pkg
+
+    failures = []
+    print(f"\n{DIM}── timekeeping (live) ──{RESET}")
+    cfg = Config.load()
+    ctx = Context(config=cfg, log=logging.getLogger("prowl.shakedown"),
+                  speak=lambda t: None, confirm=lambda q: True, dry_run=False)
+    cases = [
+        ("time_date", {"what": "time"}, True),
+        ("time_date", {"what": "date"}, True),
+        ("timer", {"duration": "10 minutes"}, True),
+        ("timer", {"at": "7am"}, True),
+        ("timer", {"at": "half past six", "label": "stand up"}, True),
+        ("timer", {"at": "nonsense"}, False),      # must fail cleanly
+        ("timer", {"action": "status"}, True),
+        ("timer", {"action": "cancel"}, True),
+    ]
+    for name, args, want_ok in cases:
+        try:
+            res = skills_pkg.REGISTRY[name].run(args, ctx)
+        except Exception as exc:  # noqa: BLE001 - that is the point
+            failures.append(f"{name} {args} raised {exc!r}")
+            print(f"  {RED}RAISE{RESET} {name} {args}: {exc!r}")
+            continue
+        ok = res.ok == want_ok and bool(res.speech)
+        if not ok:
+            failures.append(f"{name} {args}: {res.speech}")
+        mark = f"{GREEN}ok{RESET}" if ok else f"{RED}FAIL{RESET}"
+        print(f"  {mark}  {DIM}{name} {args} -> {res.speech}{RESET}")
+    # Leave no timers running.
+    skills_pkg.REGISTRY["timer"].run({"action": "cancel"}, ctx)
+    return failures
+
+
 def run_tricks() -> list[str]:
     from prowl.ui.buddy import match_trick
 
@@ -346,7 +390,7 @@ def main() -> int:
 
     skills_pkg.load_all()          # wake checks consult the skill registry
     failures = (run_routing(args.full) + run_tricks() + run_controls()
-                + run_wake() + run_skills())
+                + run_wake() + run_timekeeping() + run_skills())
 
     print(f"\n{DIM}── summary ──{RESET}")
     if failures:

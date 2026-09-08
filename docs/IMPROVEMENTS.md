@@ -146,7 +146,7 @@ privacy artifact.
 
 ---
 
-## Tier 4 — worth doing, lower urgency
+## Tier 4 — DONE (2026-09-08)
 
 | | Item | Effort |
 |---|---|---|
@@ -182,8 +182,18 @@ skills, and skill #21 gets used once a month.
 
 ## Still open
 
-* **3.4** — "stop" cannot cancel an in-flight escalation (needs a cancellable
-  process handle; the control phrase itself now reaches him instantly, since
-  turns no longer block the listener thread).
-* **All of Tier 4** — eleven smaller items, headed by the idle animation cost
-  and the README's stale privacy claim.
+* **3.4** — "stop" cannot cancel an in-flight escalation. It needs a
+  cancellable process handle; the phrase itself now reaches him instantly,
+  since turns no longer block the listener thread.
+* **4.11** — the architecture doc and roadmap still predate the cloud brain,
+  buddy, wake listener, control phrases and timekeeping.
+
+## Measured after all four tiers
+
+| | Before | After |
+|---|---|---|
+| Idle CPU, plugged in | 9.5% | **3.9%** (12fps sway) |
+| Idle CPU, on battery | 0.67% | 0.67% (static) |
+| Speech helper | ~2% | ~1.8% |
+| Shell bypasses (19 tested) | 15 allowed | **0** |
+| Shakedown cases | 74 | **127** |

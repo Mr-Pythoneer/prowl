@@ -76,7 +76,10 @@ _FPS_PLUGGED = {
     "talking": 30.0,
     "listening": 30.0,
     "thinking": 30.0,
-    "idle": 30.0,        # fully animated — there is no battery to protect
+    # Measured on an M4 Air: a visible transparent always-on-top window costs
+    # roughly 0.3% of a CPU core per frame per second, so 30fps idle was ~9%
+    # continuously. 12fps is still a smooth sway and costs about a third of it.
+    "idle": 12.0,
     "sleeping": 12.0,    # slow breathing
 }
 
@@ -935,10 +938,13 @@ class Buddy:
         self.view = view
         self._timer = None
         self._interval = 0.0
+        self._visible = False
+        self._mini_state = False
         view._owner = self
 
     # -- lifecycle ------------------------------------------------------------
     def show(self):
+        self._visible = True
         self.panel.orderFrontRegardless()
         if self._timer is None:
             self.retime()
@@ -963,10 +969,17 @@ class Buddy:
         if self._timer is not None:
             self._timer.invalidate()
             self._timer = None
+        self._visible = False
         self.panel.orderOut_(None)
 
     def is_visible(self) -> bool:
-        return bool(self.panel.isVisible())
+        """Visible? Answered from Python state, not by reading AppKit.
+
+        Every other accessor hops to the main thread; this one was being read
+        directly from worker threads, which is exactly what that rule exists to
+        prevent. Tracking the flag ourselves makes the read free and safe.
+        """
+        return self._visible
 
     # -- api ------------------------------------------------------------------
     # Prowl does its thinking on a worker thread, but AppKit may only be touched
@@ -995,13 +1008,18 @@ class Buddy:
             self.panel.setFrame_display_(
                 NSMakeRect(right - w, frame.origin.y, w, h), True)
             self.view.setMini_(mini)
+        self._mini_state = bool(mini)
         _on_main(_do)
 
     def is_mini(self) -> bool:
-        return bool(self.view.isMini())
+        """Mini? From Python state — see :meth:`is_visible` for why."""
+        return self._mini_state
 
     def toggle_mini(self):
-        self.set_mini(not self.is_mini())
+        """Flip mini mode. The read and the write are now one operation, so a
+        worker thread can't decide based on a value the main thread is about to
+        change."""
+        self.set_mini(not self._mini_state)
 
     def play_trick(self, name: str):
         """Run a one-off animation (see TRICKS). Safe from any thread."""

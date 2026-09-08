@@ -102,6 +102,9 @@ DEFAULTS: dict[str, Any] = {
     # Destructive skills (cleanup, delete, shell writes) require confirmation
     # and run as dry-runs unless explicitly applied.
     "confirm_destructive": True,
+    # Ask destructive-action questions aloud and listen for the answer, falling
+    # back to the dialog. Set false to always use the dialog.
+    "confirm_by_voice": True,
     "shell_skill_enabled": True,      # allow the guarded free-form shell skill
     "trash_instead_of_delete": True,  # move to Trash (recoverable), never rm -rf
 
@@ -234,7 +237,13 @@ class Config:
         """
         with _SAVE_LOCK:
             path.parent.mkdir(parents=True, exist_ok=True)
-            payload = json.dumps(self._data, indent=2, sort_keys=True)
+            # Persist only what the user actually changed. Writing the whole
+            # merged dict froze every default on disk the first time anything
+            # was saved, after which improvements to defaults in code were
+            # silently ignored on this machine.
+            changed = {k: v for k, v in self._data.items()
+                       if k not in DEFAULTS or DEFAULTS[k] != v}
+            payload = json.dumps(changed, indent=2, sort_keys=True)
             tmp = path.with_name(path.name + f".tmp{os.getpid()}")
             try:
                 tmp.write_text(payload)

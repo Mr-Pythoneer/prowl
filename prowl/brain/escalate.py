@@ -22,6 +22,15 @@ class EscalationError(RuntimeError):
     pass
 
 
+def _kill_group_of(cmd: list[str]) -> None:
+    """Best-effort: kill anything left over from a timed-out agent run."""
+    try:
+        subprocess.run(["pkill", "-f", " ".join(cmd[:2])],
+                       capture_output=True, timeout=5)
+    except (FileNotFoundError, subprocess.SubprocessError, OSError):
+        pass
+
+
 class Escalator:
     def __init__(self, config: Config):
         self.cfg = config
@@ -70,15 +79,23 @@ class Escalator:
 
     def _exec(self, cmd: list[str]) -> subprocess.CompletedProcess:
         try:
+            # Own process group: the agent spawns its own children by design,
+            # and killing only the direct child leaves them running — still
+            # touching the filesystem — while we tell the user it was stopped.
             proc = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
                 timeout=self.cfg.escalation_timeout + 30,
+                start_new_session=True,
             )
         except FileNotFoundError as exc:
             raise EscalationError(f"`{cmd[0]}` is not installed or not on PATH.") from exc
         except subprocess.TimeoutExpired as exc:
+            # subprocess.run has already killed the direct child; take the rest
+            # of its process group with it.
+            if exc.args and getattr(exc, "cmd", None):
+                _kill_group_of(cmd)
             raise EscalationError("The agent took too long and was stopped.") from exc
         if proc.returncode != 0:
             err = (proc.stderr or proc.stdout or "").strip()[:500]

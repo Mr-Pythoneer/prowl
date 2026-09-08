@@ -26,7 +26,7 @@ Think of it as **Siri + OpenClaw**: the snappy front-end of a voice assistant, b
 | Junk cleanup / disk reclaim | No | **Yes**, safely (dry-run, moves to Trash) |
 | Offline | Barely | Local model + skills work **offline** |
 | Extensible | No | **Drop a Python file in `skills/`** |
-| Your data | Apple's servers | **Stays on your Mac** (except escalated tasks) |
+| Your data | Apple's servers | **Your choice** — see Privacy below |
 
 ---
 
@@ -178,3 +178,26 @@ voice + menu bar are the front-end layer. Roadmap in **[docs/ROADMAP.md](docs/RO
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+
+## Privacy
+
+Where your words go depends on `brain_backend` in `~/.prowl/config.json`:
+
+| Setting | Speech recognition | Routing / chat | Hard tasks |
+|---|---|---|---|
+| `local` | on-device | on-device (Ollama) | not sent |
+| `auto` (default) | on-device | **a cloud API** when a key is set, else on-device | sent to Claude |
+| `cloud` | on-device | **a cloud API** | sent to Claude |
+
+Speech recognition is always on-device — audio never leaves the Mac. What can
+leave is the *transcript*: with `auto` and an API key configured, every phrase
+that the deterministic pre-router doesn't already handle is sent to the cloud
+model to be classified. Common commands ("open Safari", "turn it up") never
+leave, because they never reach a model at all.
+
+For no network traffic whatsoever:
+
+```bash
+prowl offline on          # or: prowl config set brain_backend local
+```
