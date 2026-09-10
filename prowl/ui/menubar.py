@@ -23,6 +23,7 @@ import subprocess
 import sys
 import threading
 
+import objc
 import rumps
 
 from ..core.context import Context
@@ -74,8 +75,16 @@ class _ShortCapture:
 
 
 def _run_bg(target, *args) -> None:
-    """Run *target* on a daemon thread so the rumps main loop never blocks."""
-    threading.Thread(target=target, args=args, daemon=True).start()
+    """Run *target* on a daemon thread so the rumps main loop never blocks.
+
+    Wrapped in an autorelease pool: these threads reach AppKit through the
+    Context's speak/confirm, and a worker thread has nothing draining its pool.
+    """
+    def _wrapped():
+        with objc.autorelease_pool():
+            target(*args)
+
+    threading.Thread(target=_wrapped, daemon=True).start()
 
 
 class ProwlApp(rumps.App):
@@ -414,7 +423,10 @@ class ProwlApp(rumps.App):
             if self.buddy is None:
                 continue
             try:
-                self.buddy.set_pinned(self._pinned_lines())
+                # Own pool: this is a worker thread touching AppKit once a
+                # second, forever.
+                with objc.autorelease_pool():
+                    self.buddy.set_pinned(self._pinned_lines())
             except Exception:  # noqa: BLE001 - cosmetic; never kill the thread
                 self.log.debug("pin refresh failed", exc_info=True)
 

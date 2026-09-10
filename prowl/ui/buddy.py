@@ -71,7 +71,7 @@ _FPS_BATTERY = {
     "listening": 15.0,   # pulsing rings
     "thinking": 15.0,    # bouncing dots
     "idle": 1.0,         # static pose; this tick only schedules blinks
-    "sleeping": 0.5,
+    "sleeping": 0.0,     # 0 = stop the timer entirely (see Buddy.retime)
 }
 _FPS_PLUGGED = {
     "evil": 30.0,
@@ -82,7 +82,9 @@ _FPS_PLUGGED = {
     # roughly 0.3% of a CPU core per frame per second, so 30fps idle was ~9%
     # continuously. 12fps is still a smooth sway and costs about a third of it.
     "idle": 12.0,
-    "sleeping": 12.0,    # slow breathing
+    # Asleep is asleep: no timer, no redraws, nothing scheduled. He is woken by
+    # a state change, which does not need a clock to notice.
+    "sleeping": 0.0,
 }
 
 # While a blink is in progress the rate jumps to this, whatever the state, so
@@ -201,7 +203,12 @@ def _color(rgb, alpha=1.0):
 
 
 def _on_main(fn):
-    """Run `fn` on the main thread, now if we are already there."""
+    """Run `fn` on the main thread, now if we are already there.
+
+    The worker-thread path needs its own autorelease pool: objects created
+    while scheduling the call have nothing to drain them there, and this runs
+    once a second for the thought cloud.
+    """
     from Foundation import NSThread
 
     if NSThread.isMainThread():
@@ -209,7 +216,8 @@ def _on_main(fn):
         return
     from PyObjCTools import AppHelper
 
-    AppHelper.callAfter(fn)
+    with objc.autorelease_pool():
+        AppHelper.callAfter(fn)
 
 
 class BuddyView(NSView):
@@ -263,6 +271,9 @@ class BuddyView(NSView):
         if state != self._state:
             if state != "sleeping":
                 self._last_activity = time.time()
+            else:
+                # Nothing cached is worth holding while asleep.
+                self._pinned = ()
             self._state = state
             self._t = 0.0
             # _t drives the blink schedule; resetting it mid-blink would leave
@@ -290,7 +301,10 @@ class BuddyView(NSView):
         if self._blink > 0.01:
             return 1.0 / _BLINK_FPS
         table = _FPS_PLUGGED if self._on_ac else _FPS_BATTERY
-        return 1.0 / max(0.25, table.get(self._state, 8.0))
+        fps = table.get(self._state, 8.0)
+        if fps <= 0.0:
+            return 0.0          # caller stops the timer entirely
+        return 1.0 / max(0.25, fps)
 
     @objc.python_method
     def _retime(self) -> None:
@@ -324,7 +338,11 @@ class BuddyView(NSView):
         self.setNeedsDisplay_(True)
 
     def tick_(self, _timer):
-        dt = self._interval
+        with objc.autorelease_pool():
+            self._tick(self._interval)
+
+    @objc.python_method
+    def _tick(self, dt):
         self._t += dt
 
         if self._trick is not None:
@@ -529,6 +547,15 @@ class BuddyView(NSView):
         return False
 
     def drawRect_(self, rect):
+        # Every Cocoa object made while drawing (NSBezierPath, NSColor,
+        # NSString, NSFont) is autoreleased. Under PyObjC nothing drains that
+        # pool for us here, so ~11 KB leaked per frame — about 270 MB an hour
+        # at 12fps, which is how a 40 MB process reached 3 GB overnight.
+        with objc.autorelease_pool():
+            self._draw_frame(rect)
+
+    @objc.python_method
+    def _draw_frame(self, rect):
         _color((0, 0, 0), 0.0).set()
         NSBezierPath.fillRect_(rect)
 
@@ -1092,13 +1119,21 @@ class Buddy:
         """(Re)install the animation timer at the rate the current state wants.
 
         The timer's own frequency is the expensive part — not the drawing — so
-        this is what actually saves the battery.
+        this is what actually saves the battery. An interval of 0 means the
+        state has nothing to animate (asleep), and the timer is removed
+        outright rather than left ticking slowly: a stopped timer costs exactly
+        nothing, where even one tick a second is a wake-up every second.
         """
         interval = self.view.desired_interval()
         if self._timer is not None:
             if abs(self._interval - interval) < 1e-6:
                 return
             self._timer.invalidate()
+            self._timer = None
+        if interval <= 0.0:
+            self._interval = 0.0
+            self.view.setNeedsDisplay_(True)   # draw the sleeping pose once
+            return
         self._interval = interval
         self.view._interval = interval
         self._timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
