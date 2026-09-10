@@ -31,7 +31,7 @@ from ..core.logs import get_logger
 from ..core.mood import EVIL_AWAKENING, EVIL_SECONDS, EVIL_SYSTEM, Mood
 from ..executor import Orchestrator
 from ..voice import stt
-from ..voice.tts import speak_async, stop as tts_stop
+from ..voice.tts import speak_async, speech_seconds, stop as tts_stop
 import re
 
 from ..voice.control import match_control
@@ -483,7 +483,7 @@ class ProwlApp(rumps.App):
             self.buddy.say(text)
             # Typed replies are never spoken, so nothing else would end the
             # talking animation.
-            threading.Timer(max(1.5, min(8.0, len(text) / 14.0)),
+            threading.Timer(max(2.5, speech_seconds(text, self.cfg.get("tts_rate"))),
                             self._after_speaking).start()
 
     def _speak(self, text: str) -> None:
@@ -502,7 +502,7 @@ class ProwlApp(rumps.App):
         if not self.cfg.voice_enabled:
             # Nothing will tell us when speech ended, because there is none.
             # Settle after a read-length pause instead of staying in "talking".
-            threading.Timer(max(1.5, min(8.0, len(text) / 14.0)),
+            threading.Timer(max(2.5, speech_seconds(text, self.cfg.get("tts_rate"))),
                             self._after_speaking).start()
             return
 

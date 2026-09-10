@@ -208,13 +208,15 @@ class Timer(Skill):
             "at": "a clock time for an alarm, e.g. '7am' or '18:30'",
             "label": "optional: what the timer is for",
             "action": "optional: 'cancel' or 'status'",
+            "kind": "with cancel: 'timer', 'alarm' or 'all' — only that kind is cancelled",
         },
     )
 
     def run(self, args: dict[str, Any], ctx: Context) -> SkillResult:
         action = str(args.get("action") or "").strip().lower()
         if action in ("cancel", "stop", "clear"):
-            return self._cancel()
+            return self._cancel(str(args.get("kind") or "").strip().lower(),
+                                str(args.get("label") or "").strip())
         if action in ("status", "check", "remaining", "left"):
             return self._status()
 
@@ -244,7 +246,11 @@ class Timer(Skill):
                 f"Would set a timer for {_spoken_duration(seconds)}.")
 
         entry: dict[str, Any] = {
-            "ends_at": time.time() + seconds,
+            # An alarm keeps its exact target. Adding int(seconds) to now drops
+            # the fractional second, so "8am" became 7:59:59 — it rang early,
+            # and read back as a 7:59 alarm.
+            "ends_at": (alarm_at.timestamp() if alarm_at is not None
+                        else time.time() + seconds),
             "label": label,
             "is_alarm": alarm_at is not None,
             "cancelled": False,
@@ -298,16 +304,44 @@ class Timer(Skill):
             pass
 
     @staticmethod
-    def _cancel() -> SkillResult:
+    def _cancel(kind: str = "", label: str = "") -> SkillResult:
+        """Cancel timers, alarms, or both — only what was asked for.
+
+        "Cancel my alarm" used to clear every running timer as well: both
+        phrases routed to one argument-free cancel that emptied the list.
+        """
+        want_alarm = {"alarm": True, "alarms": True,
+                      "timer": False, "timers": False}.get(kind)  # None = both
+        needle = label.lower()
         with _TIMERS_LOCK:
-            live = list(_TIMERS)
-            _TIMERS.clear()
-        for entry in live:
+            chosen = [e for e in _TIMERS
+                      if (want_alarm is None or bool(e.get("is_alarm")) == want_alarm)
+                      and (not needle or needle in (e["label"] or "").lower())]
+            for entry in chosen:
+                _TIMERS.remove(entry)
+        for entry in chosen:
             entry["cancelled"] = True
-        if not live:
-            return SkillResult.say("You don't have any timers running.")
-        return SkillResult.say(
-            f"Cancelled {len(live)} timer{'s' if len(live) != 1 else ''}.")
+
+        if not chosen:
+            what = {True: "alarms set", False: "timers running",
+                    None: "timers or alarms running"}[want_alarm]
+            return SkillResult.say(f"You don't have any {what}"
+                                   + (f" for {label}" if label else "") + ".")
+        if len(chosen) == 1:
+            entry = chosen[0]
+            if entry.get("is_alarm"):
+                when = datetime.fromtimestamp(entry["ends_at"]).strftime("%-I:%M %p")
+                return SkillResult.say(f"Cancelled your {when} alarm.")
+            name = f"the {entry['label']} timer" if entry["label"] else "your timer"
+            return SkillResult.say(f"Cancelled {name}.")
+        alarms = sum(1 for e in chosen if e.get("is_alarm"))
+        timers = len(chosen) - alarms
+        parts = []
+        if timers:
+            parts.append(f"{timers} timer{'s' if timers != 1 else ''}")
+        if alarms:
+            parts.append(f"{alarms} alarm{'s' if alarms != 1 else ''}")
+        return SkillResult.say("Cancelled " + " and ".join(parts) + ".")
 
     @staticmethod
     def _status() -> SkillResult:

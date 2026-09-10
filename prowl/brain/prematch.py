@@ -144,14 +144,26 @@ def match(utterance: str) -> Match:
         return ("time_date", {"what": "date"})
 
     # --- timers --------------------------------------------------------------
-    if re.search(r"\b(cancel|stop|clear)\b.*\btimers?\b", t):
-        return ("timer", {"action": "cancel"})
+    # Cancelling: only what was named. "Cancel my alarm" used to clear every
+    # running timer as well, because both routed to one bare "cancel".
+    has_timer = re.search(r"\btimers?\b", t)
+    has_alarm = re.search(r"\balarms?\b", t)
+    if (has_timer or has_alarm) and re.search(
+            r"\b(?:cancel|stop|clear|delete|remove|turn off|kill)\b", t):
+        kind = "all" if (has_timer and has_alarm) else ("alarm" if has_alarm else "timer")
+        m = re.search(r"\b(?:cancel|stop|clear|delete|remove|turn off|kill)\s+"
+                      r"(?:the\s+|my\s+|that\s+|all\s+(?:of\s+)?(?:my\s+|the\s+)?)?"
+                      r"(.*?)\s*\b(?:timers?|alarms?)\b", t)
+        label = m.group(1).strip() if m else ""
+        # "cancel the 8am alarm" names a time, not a label.
+        if label in ("", "and", "both") or re.search(
+                r"\d|\b(?:am|pm|morning|tonight|evening)\b", label):
+            label = ""
+        return ("timer", {"action": "cancel", "kind": kind, "label": label})
     if re.search(r"\b(how (long|much time)|what'?s? left|time left|remaining)\b.*\btimers?\b", t) \
             or re.search(r"\btimers?\b.*\b(left|remaining|status)\b", t):
         return ("timer", {"action": "status"})
     # Alarms: a clock time rather than a duration.
-    if re.search(r"\b(cancel|stop|clear)\b.*\balarms?\b", t):
-        return ("timer", {"action": "cancel"})
     m = re.search(r"\b(?:set (?:an? )?alarm(?: for| at)?|wake me(?: up)?(?: at| for)?"
                   r"|alarm for|alarm at)\s+(.+)", u, re.I)
     if m:

@@ -161,6 +161,21 @@ def _settings(cfg: Any) -> tuple[str, int]:
     return best_voice() or _DEFAULT_VOICE, rate
 
 
+def speech_seconds(text: str, rate: Any = None) -> float:
+    """Roughly how long `say` takes to speak *text*, in seconds.
+
+    `say -r` is words per minute, so this is close for plain sentences. Used to
+    keep text on screen for as long as he is saying it — anything shown must
+    last at least as long as the voice, or it vanishes mid-sentence.
+    """
+    try:
+        wpm = int(rate) if rate else _DEFAULT_RATE
+    except (TypeError, ValueError):
+        wpm = _DEFAULT_RATE
+    words = len((text or "").split())
+    return 0.8 + words * 60.0 / max(80, wpm)
+
+
 def _build_cmd(text: str, cfg: Any) -> list[str]:
     """Assemble the ``say`` argv for *text*."""
     voice, rate = _settings(cfg)

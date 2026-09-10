@@ -273,8 +273,56 @@ def run_timekeeping() -> list[str]:
             failures.append(f"{name} {args}: {res.speech}")
         mark = f"{GREEN}ok{RESET}" if ok else f"{RED}FAIL{RESET}"
         print(f"  {mark}  {DIM}{name} {args} -> {res.speech}{RESET}")
+    # Cancelling must take only what was named. "Cancel my alarm" once cleared
+    # a running kitchen timer too.
+    from prowl.brain.prematch import match as _match
+
+    timer = skills_pkg.REGISTRY["timer"]
+    for utterance, must_survive in (("cancel my alarm", "pizza"),
+                                    ("cancel my timer", "hours")):
+        timer.run({"action": "cancel"}, ctx)
+        timer.run({"duration": "10 minutes", "label": "pizza"}, ctx)
+        timer.run({"at": "7am"}, ctx)
+        timer.run(_match(utterance)[1], ctx)
+        left = timer.run({"action": "status"}, ctx).speech
+        ok = must_survive in left
+        if not ok:
+            failures.append(f"{utterance!r} took the wrong thing: {left}")
+        mark = f"{GREEN}ok{RESET}" if ok else f"{RED}FAIL{RESET}"
+        print(f"  {mark}  {DIM}{utterance!r} leaves: {left}{RESET}")
+
     # Leave no timers running.
-    skills_pkg.REGISTRY["timer"].run({"action": "cancel"}, ctx)
+    timer.run({"action": "cancel"}, ctx)
+    return failures
+
+
+def run_buddy() -> list[str]:
+    """Behaviour of the character that has regressed before."""
+    from AppKit import NSApplication, NSMakeRect
+
+    NSApplication.sharedApplication()
+    from prowl.ui.buddy import BuddyView, _H, _W
+
+    failures = []
+    print(f"\n{DIM}── buddy ──{RESET}")
+    v = BuddyView.alloc().initWithFrame_(NSMakeRect(0, 0, _W, _H))
+    checks = []
+    v.setState_("sleeping")
+    checks.append(("eyes shut while asleep", v._blink >= 1.0))
+    checks.append(("no timer while asleep", v.desired_interval() == 0.0))
+    v.setState_("idle")
+    checks.append(("eyes open when awake", v._blink < 0.01))
+    v._text = "word " * 60
+    checks.append(("panel sized for a long answer",
+                   v._needed_size(400.0)[1] > _H + 40))
+    v._text = ""
+    checks.append(("panel back to normal with no text",
+                   v._needed_size(400.0)[1] == float(_H)))
+    for label, ok in checks:
+        if not ok:
+            failures.append(f"buddy: {label}")
+        mark = f"{GREEN}ok{RESET}" if ok else f"{RED}FAIL{RESET}"
+        print(f"  {mark}  {DIM}{label}{RESET}")
     return failures
 
 
@@ -410,7 +458,7 @@ def main() -> int:
 
     skills_pkg.load_all()          # wake checks consult the skill registry
     failures = (run_routing(args.full) + run_tricks() + run_controls()
-                + run_wake() + run_timekeeping() + run_skills())
+                + run_wake() + run_timekeeping() + run_buddy() + run_skills())
 
     print(f"\n{DIM}── summary ──{RESET}")
     if failures:

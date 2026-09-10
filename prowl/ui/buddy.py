@@ -43,9 +43,14 @@ from AppKit import (
 )
 from Foundation import NSMakeSize, NSPoint, NSPointInRect, NSZeroRect
 
+from ..voice.tts import speech_seconds
+
 # Panel geometry. The character occupies the lower portion; the speech bubble
 # grows upward into the space above it.
 _W, _H = 190, 210
+# Widest a speech bubble gets. The panel widens around him to fit it, and grows
+# upward for long answers — see Buddy.fit_content.
+_BUBBLE_MAX_W = 250.0
 _CHAR_W, _CHAR_H = 60, 84           # character's drawing box
 
 # "Mini" mode: just the character, half size, no speech bubble — for when the
@@ -240,6 +245,7 @@ class BuddyView(NSView):
         self._interval = 1.0 / 10.0     # replaced by _retime() on show()
         self._was_blinking = False
         self._pinned: tuple[str, ...] = ()   # thought-cloud lines
+        self._text_hold = 0.0        # how long the current bubble stays up
         self._trick = None           # name of the running trick, or None
         self._trick_t = 0.0
         self._last_activity = time.time()
@@ -274,12 +280,18 @@ class BuddyView(NSView):
             else:
                 # Nothing cached is worth holding while asleep.
                 self._pinned = ()
+                self._fit_panel()
             self._state = state
             self._t = 0.0
             # _t drives the blink schedule; resetting it mid-blink would leave
             # the eyes stuck shut until the next cycle.
             self._blink = 0.0
             self._blink_at = random.uniform(1.5, 4.0)
+            if state == "sleeping":
+                # Shut the eyes here, not in the tick: asleep there is no tick,
+                # so eyes left to close "on the next frame" stayed open all
+                # night — which is exactly as creepy as it sounds.
+                self._blink = 1.0
             self._retime()
         self.setNeedsDisplay_(True)
 
@@ -298,6 +310,10 @@ class BuddyView(NSView):
         """Seconds between frames for the current state and power source."""
         if self._trick is not None:
             return 1.0 / 30.0
+        # Checked before the blink rule: shut eyes count as "blinking", and
+        # that used to bump a sleeping buddy up to the blink frame rate.
+        if self._state == "sleeping":
+            return 0.0
         if self._blink > 0.01:
             return 1.0 / _BLINK_FPS
         table = _FPS_PLUGGED if self._on_ac else _FPS_BATTERY
@@ -329,12 +345,18 @@ class BuddyView(NSView):
         lines = tuple(str(x) for x in (lines or ()) if str(x).strip())[:3]
         if lines != self._pinned:
             self._pinned = lines
+            self._fit_panel()
             self.setNeedsDisplay_(True)
 
     def setText_(self, text):
         self._text = (text or "").strip()
-        # Roughly reading speed, clamped: long answers shouldn't pin the bubble.
-        self._text_until = time.time() + max(2.5, min(9.0, len(self._text) / 14.0))
+        # Held for as long as it takes to *say* it. The spoken path clears it
+        # the moment speech really ends, so this is only a backstop and errs
+        # long; the old 9-second cap cleared long answers mid-sentence.
+        self._text_hold = (speech_seconds(self._text) * 1.4 + 2.0
+                           if self._text else 0.0)
+        self._text_until = time.time() + self._text_hold
+        self._fit_panel()
         self.setNeedsDisplay_(True)
 
     def tick_(self, _timer):
@@ -379,6 +401,7 @@ class BuddyView(NSView):
 
         if self._text and time.time() > self._text_until:
             self._text = ""
+            self._fit_panel()           # shrink back down around him
 
         # Re-check the power source now and then; plugging in should smooth the
         # animation out without restarting anything.
@@ -401,7 +424,7 @@ class BuddyView(NSView):
         # a speech process that died — he would mouth words forever at full
         # frame rate. Ending it here means no caller can leave him stuck.
         if self._trick is None and self._state == "talking":
-            if (not self._text and self._t > _TALK_SETTLE) or self._t > _TALK_MAX:
+            if (not self._text and self._t > _TALK_SETTLE) or self._t > max(_TALK_MAX, self._text_hold):
                 self.setState_("idle")
 
         # Left alone for long enough, he lies down for a nap. Any state change
@@ -947,30 +970,25 @@ class BuddyView(NSView):
     def _draw_bubble(self, text, y):
         """A rounded speech bubble above the character, sized to fit its text.
 
-        The height is measured rather than estimated — guessing the line count
-        from the single-line width was what let long answers spill out of the
-        bubble and off the panel. Anything still too tall for the panel is
-        truncated, because a bubble that runs off screen shows nothing useful.
+        The panel grows upward to hold the whole thing (Buddy.fit_content), so
+        the full answer is shown rather than two lines and an ellipsis. It only
+        truncates if even a panel nearly the height of the screen can't hold
+        it — and then "show me the details" has the rest.
         """
-        font = NSFont.systemFontOfSize_(11.5)
-        para = NSMutableParagraphStyle.alloc().init()
-        para.setLineBreakMode_(NSLineBreakByWordWrapping)
-        attrs = {NSFontAttributeName: font,
-                 NSForegroundColorAttributeName: _color(_INK),
-                 NSParagraphStyleAttributeName: para}
-
+        bounds = self.bounds()
+        attrs = self._bubble_attrs()
         pad_x, pad_y = 10.0, 7.0
-        max_w = _W - 24
+        max_w = self._bubble_max_w(bounds.size.width)
         text_w = max_w - pad_x * 2
-        # Room between the character's head and the top of the panel.
-        max_box_h = max(30.0, _H - y - 6)
+        max_box_h = max(30.0, bounds.size.height - y - 6)
         max_text_h = max_box_h - pad_y * 2
 
         ns, size = self._fit_text(text, attrs, text_w, max_text_h)
         box_w = min(max_w, max(70.0, size.width + pad_x * 2))
         box_h = size.height + pad_y * 2
-        bx = (_W - box_w) / 2.0
-        by = min(y, _H - box_h - 4)
+        mid = bounds.size.width / 2.0
+        bx = mid - box_w / 2.0
+        by = min(y, bounds.size.height - box_h - 4)
 
         rect = NSMakeRect(bx, by, box_w, box_h)
         self._bubble_rect = rect
@@ -988,15 +1006,72 @@ class BuddyView(NSView):
 
         # Tail pointing down at the character.
         tail = NSBezierPath.bezierPath()
-        tail.moveToPoint_(NSMakePoint(_W / 2 - 6, by + 1))
-        tail.lineToPoint_(NSMakePoint(_W / 2, by - 7))
-        tail.lineToPoint_(NSMakePoint(_W / 2 + 6, by + 1))
+        tail.moveToPoint_(NSMakePoint(mid - 6, by + 1))
+        tail.lineToPoint_(NSMakePoint(mid, by - 7))
+        tail.lineToPoint_(NSMakePoint(mid + 6, by + 1))
         _color(_BUBBLE).set()
         tail.fill()
 
         ns.drawWithRect_options_attributes_(
             NSMakeRect(bx + pad_x, by + pad_y, text_w, size.height),
             NSStringDrawingUsesLineFragmentOrigin, attrs)
+
+    @objc.python_method
+    def _bubble_attrs(self):
+        font = NSFont.systemFontOfSize_(11.5)
+        para = NSMutableParagraphStyle.alloc().init()
+        para.setLineBreakMode_(NSLineBreakByWordWrapping)
+        return {NSFontAttributeName: font,
+                NSForegroundColorAttributeName: _color(_INK),
+                NSParagraphStyleAttributeName: para}
+
+    @objc.python_method
+    def _bubble_max_w(self, panel_w):
+        return max(70.0, min(_BUBBLE_MAX_W, panel_w - 24.0))
+
+    @objc.python_method
+    def _needed_size(self, w_avail):
+        """(width, height) the panel needs for what is on screen right now.
+
+        Mirrors the layout in _draw_frame — character, thought cloud, then the
+        bubble stacked above it. It lives beside the drawing code because the
+        two must agree: if this underestimates, the bubble truncates again.
+        """
+        scale = self._scale
+        char_h = _CHAR_H * scale
+        base = 14.0 * scale
+        width = float(_W)
+        top = base + char_h + 8.0 * scale
+        need = top
+        cloud_top = top
+        if self._pinned:
+            font = NSFont.systemFontOfSize_(10.0 * scale)
+            sizes = [NSString.stringWithString_(ln).sizeWithAttributes_(
+                {NSFontAttributeName: font}) for ln in self._pinned]
+            h_c = sum(sz.height for sz in sizes) + 18.0 * scale
+            width = max(width, max(sz.width for sz in sizes) + 42.0 * scale)
+            cloud_top = top + h_c
+            need = top + h_c * 1.45 + 6.0        # the bumps rise above the body
+        if self._text:
+            width = min(max(width, _BUBBLE_MAX_W + 24.0), w_avail)
+            wrap = self._bubble_max_w(width) - 20.0
+            rect = NSString.stringWithString_(self._text) \
+                .boundingRectWithSize_options_attributes_(
+                    NSMakeSize(wrap, 10000.0),
+                    NSStringDrawingUsesLineFragmentOrigin, self._bubble_attrs())
+            y = max(cloud_top + 14.0 * scale, base + char_h + 14.0)
+            need = max(need, y + rect.size.height + 14.0 + 10.0)
+        # Headroom so a hop or a flip doesn't carry the bubble off the top.
+        return min(width, w_avail), max(float(_H), need + 16.0)
+
+    @objc.python_method
+    def _fit_panel(self):
+        """Ask the owning panel to fit what is now on screen."""
+        owner = self._owner
+        if owner is None or self._mini:
+            return
+        with objc.autorelease_pool():
+            owner.fit_content()
 
     @objc.python_method
     def _fit_text(self, text, attrs, width, max_height):
@@ -1168,6 +1243,30 @@ class Buddy:
             if (text or "").strip():
                 self.view.setState_("talking")
         _on_main(_do)
+
+    def fit_content(self) -> None:
+        """Grow or shrink the panel to fit the bubble and cloud. Main thread.
+
+        The bottom edge and horizontal centre stay put, so the paperclip itself
+        never moves — only the empty space above and around him changes. Width
+        is limited to what fits symmetrically on screen for the same reason,
+        and height stops just short of the top of the screen.
+        """
+        if self._mini_state:
+            return
+        frame = self.panel.frame()
+        screen = self.panel.screen() or NSScreen.mainScreen()
+        vis = screen.visibleFrame()
+        centre = frame.origin.x + frame.size.width / 2.0
+        room = min(centre - vis.origin.x, vis.origin.x + vis.size.width - centre)
+        w_avail = max(float(_W), 2.0 * room - 8.0)
+        w, h = self.view._needed_size(w_avail)
+        h = max(float(_H), min(h, vis.origin.y + vis.size.height
+                               - frame.origin.y - 4.0))
+        if abs(frame.size.width - w) < 0.5 and abs(frame.size.height - h) < 0.5:
+            return
+        self.panel.setFrame_display_(
+            NSMakeRect(centre - w / 2.0, frame.origin.y, w, h), True)
 
     def set_mini(self, mini: bool):
         """Switch between the full buddy and the compact character-only one.
