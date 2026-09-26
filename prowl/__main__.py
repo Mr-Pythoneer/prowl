@@ -283,6 +283,14 @@ def cmd_doctor() -> int:
         print("•  If voice returns nothing, check System Settings → Privacy & "
               "Security → Microphone and Speech Recognition for Prowl/Terminal")
 
+    if cfg.get("inbox_enabled", True):
+        from .ui.inbox import is_up
+        port = int(cfg.get("inbox_port", 18790))
+        if is_up(port):
+            print(f"✅ Inbox answering on 127.0.0.1:{port}")
+        else:
+            print(f"•  Inbox not answering on 127.0.0.1:{port} — is `prowl serve` running?")
+
     print(f"•  Config: {CONFIG_PATH} ({'exists' if CONFIG_PATH.exists() else 'defaults'})")
     print("=" * 40)
     print("All good 🐾" if ok else "Some checks failed — see above.")

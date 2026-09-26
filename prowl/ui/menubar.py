@@ -159,6 +159,18 @@ class ProwlApp(rumps.App):
         if cfg.get("always_listening", False):
             self.wake.start()
 
+        # Local inbox for the on-demand voice assistant (see ui/inbox.py).
+        self.inbox = None
+        if cfg.get("inbox_enabled", True):
+            try:
+                from .inbox import Inbox
+
+                self.inbox = Inbox(self._inbox_run, self._inbox_memory, self.log,
+                                   port=int(cfg.get("inbox_port", 18790)),
+                                   name=str(cfg.get("assistant_name", "Bob"))).start()
+            except Exception:  # noqa: BLE001 - optional; never block startup
+                self.log.exception("inbox unavailable")
+
         self.menu = [
             rumps.MenuItem("Talk (voice)", callback=self.on_talk),
             rumps.MenuItem("Type a command…", callback=self.on_type),
@@ -588,15 +600,17 @@ class ProwlApp(rumps.App):
         return "button returned:Yes" in result.stdout
 
     # -- request plumbing ----------------------------------------------------
-    def _handle(self, text: str, silent: bool = False) -> None:
+    def _handle(self, text: str, silent: bool = False):
         """Route *text* through the Orchestrator (background thread only).
 
         With ``silent`` the reply is shown but not spoken — the typed path,
-        for when you don't want the room to hear the answer.
+        for when you don't want the room to hear the answer. Returns the
+        SkillResult (None if the turn crashed) for callers like the inbox.
         """
         text = (text or "").strip()
         if not text:
-            return
+            return None
+        result = None
         try:
             self._buddy("thinking")
             if silent:
@@ -620,6 +634,23 @@ class ProwlApp(rumps.App):
             # _speak() puts it in "talking"; settle back once the turn is done.
             threading.Timer(2.5, lambda: self._buddy(
                 "evil" if self.mood.is_evil() else "idle")).start()
+        return result
+
+    # -- inbox (requests from other local programs) --------------------------
+    def _inbox_run(self, text: str, silent: bool) -> tuple[bool, str, str]:
+        """Run an inbox request exactly like a typed/spoken turn."""
+        if self._handle_trick(text, silent) or self._handle_control(text, silent):
+            return True, "Done.", ""
+        result = self._handle(text, silent)
+        if result is None:
+            return False, "That request failed. See Bob's log.", ""
+        return bool(result.ok), result.speech or "", result.detail or ""
+
+    def _inbox_memory(self) -> dict:
+        from ..skills.memory import active_notes
+
+        return {"notes": active_notes(), "last_skill": self.orch._last_skill,
+                "offline": bool(self.cfg.get("offline", False))}
 
     def _talk(self) -> None:
         """Capture one utterance and act on it (background thread only).
@@ -774,6 +805,8 @@ class ProwlApp(rumps.App):
             hotkey.stop_hotkey(self._hotkey)
             # Leaves no detached helper holding the microphone.
             self.wake.stop()
+            if self.inbox is not None:
+                self.inbox.stop()
             stt.stop_helpers()
             tts_stop()          # otherwise `say` keeps talking after we exit
         except Exception:  # noqa: BLE001 - shutdown must not raise

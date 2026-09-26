@@ -75,6 +75,12 @@ DEFAULTS: dict[str, Any] = {
 
     # ---- interaction --------------------------------------------------------
     # ---- desktop buddy ------------------------------------------------------
+    # ---- local inbox --------------------------------------------------------
+    # 127.0.0.1-only HTTP inbox (token in ~/.prowl/inbox_token) so the
+    # on-demand voice assistant can hand Bob requests. See prowl/ui/inbox.py.
+    "inbox_enabled": True,
+    "inbox_port": 18790,
+
     "buddy_enabled": True,           # the floating animated character
     "buddy_greet": True,             # say hello when `prowl serve` starts
     "buddy_mini": False,             # compact mode: character only, no bubble
