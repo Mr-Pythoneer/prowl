@@ -43,6 +43,16 @@ def match(utterance: str) -> Match:
         return None
     t = u.lower()
 
+    # --- the on-demand assistant's page (before open_app, which would try to
+    # launch an app called "assistant"). Tolerates the usual misspellings.
+    if re.search(r"^(?:please\s+)?(?:open|show|launch|start|pull up)\s+(?:me\s+)?(?:the\s+|my\s+)?"
+                 r"ass?iste?[ae]nt\b(?:\s+(?:page|app|window|site))?\W*$", t):
+        return ("open_assistant", {})
+    m = re.search(r"^(?:please\s+)?(?:open|launch|start|use|ask)\s+(?:the\s+|my\s+)?ass?iste?[ae]nt"
+                  r"\s*(?:,|and|to|:)\s*(.+)$", u, re.I)
+    if m:
+        return ("browse", {"task": m.group(1).strip()})
+
     # --- open a URL/website (before open_app, which skips domains) -----------
     m = re.search(r"\b(?:open|go to|goto|visit|navigate to|pull up)\s+(\S*\.\S+)", u, re.I)
     if m:

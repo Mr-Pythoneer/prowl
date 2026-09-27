@@ -70,6 +70,8 @@ ROUTING_CASES: list[tuple[str, str | None]] = [
     ("skip this song", "media_control"),
     ("previous track", "media_control"),
     # web
+    ("open assistent", "open_assistant"),
+    ("open assistant and find flights to Tokyo", "browse"),
     ("open google", "open_site"),
     ("open youtube", "open_site"),
     ("open gmail", "open_site"),
@@ -151,6 +153,8 @@ SKILL_ARGS: dict[str, dict] = {
     "open_url": {"url": "example.com"},
     "web_search": {"query": "hello"},
     "open_site": {"name": "github"},
+    "open_assistant": {},
+    "browse": {"task": "find the cheapest flight to Tokyo"},
     "cleanup": {"categories": ["trash"]},
     "run_shell": {"command": "echo hello"},
 }
